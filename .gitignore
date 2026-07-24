@@ -1,0 +1,21 @@
+# Secrets et configuration locale
+.env
+.env.*
+!.env.example
+frontend/config.local.js
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Archives et fichiers temporaires
+*.zip
+*.log
+.tmp/
+tmp/
