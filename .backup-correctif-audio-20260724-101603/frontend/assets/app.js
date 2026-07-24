@@ -26,31 +26,6 @@ function pauseIcon(b){return b?.design?.customPauseIcon?`<img src="${esc(b.desig
 function canEditBeat(b){return state.user&&(state.user.role==='Admin'||state.user.id===b.producer_id);}
 function isCreator(){return state.user&&['Beatmaker','Admin'].includes(state.user.role);}
 function isArtist(){return state.user&&['Artiste','Admin'].includes(state.user.role);}
-function apiBase(){return String(window.DRSX_CONFIG?.apiBaseUrl||window.DRSX_CONFIG?.driveWorkerUrl||'').replace(/\/$/,'');}
-function previewFile(beat){return (beat?.files||[]).find(file=>file?.kind==='preview'&&file?.drive_id)||(beat?.files||[]).find(file=>file?.kind==='preview');}
-function mediaSourceForBeat(beat){
- const file=previewFile(beat),api=apiBase();
- if(!window.DRSXData.isDemo()&&api&&file?.drive_id)return `${api}/public-media/${encodeURIComponent(file.drive_id)}`;
- return beat?.audio||file?.stream_url||beat?.preview_url||'';
-}
-function audioErrorText(){
- const code=audio.error?.code||0;
- if(code===1)return 'La lecture a été interrompue.';
- if(code===2)return 'Le fichier audio n’a pas pu être chargé depuis le serveur.';
- if(code===3)return 'Le navigateur ne parvient pas à décoder cette préécoute.';
- if(code===4)return 'Format audio non pris en charge. Utilise une préécoute MP3 ou WAV standard.';
- return 'Impossible de lire cette préécoute.';
-}
-function validatePreviewFile(file){
- if(!file)return Promise.resolve(null);
- const supported=/\.(mp3|wav)$/i.test(file.name)||['audio/mpeg','audio/mp3','audio/wav','audio/x-wav','audio/wave'].includes(String(file.type||'').toLowerCase());
- if(!supported)return Promise.reject(new Error('La préécoute doit être un fichier MP3 ou WAV standard.'));
- return new Promise((resolve,reject)=>{
-  const probe=document.createElement('audio'),url=URL.createObjectURL(file),timer=setTimeout(()=>done(new Error('Impossible de lire les informations de cette préécoute.')),15000);
-  const done=(error,value)=>{clearTimeout(timer);probe.removeAttribute('src');probe.load();URL.revokeObjectURL(url);error?reject(error):resolve(value);};
-  probe.preload='metadata';probe.onloadedmetadata=()=>done(null,Number.isFinite(probe.duration)?probe.duration:null);probe.onerror=()=>done(new Error('Cette préécoute ne peut pas être décodée. Exporte-la en MP3 320 kb/s ou WAV PCM.'));probe.src=url;
- });
-}
 
 function beatCard(b,{owner=false}={}){
  const expired=b.visibility==='Expiré';
@@ -140,23 +115,7 @@ async function renderRoute(){const token=++state.routeToken;app.innerHTML=loadin
  else if(raw==='/app')html=await dashboard();else if(raw==='/app/explorer')html=await explore();else if(raw==='/app/beatmakers')html=await directory('Beatmaker');else if(raw==='/app/artistes')html=await directory('Artiste');else if(raw==='/app/favoris')html=await favorites();else if(raw==='/app/playlists')html=await playlistsPage();else if(raw==='/app/collaborations')html=await collaborationsPage();else if(parts[0]==='app'&&parts[1]==='collaborations'&&parts[2])html=await collaborationDetail(parts[2]);else if(raw==='/app/productions')html=isCreator()?await productions():await dashboard();else if(raw==='/app/upload')html=isCreator()?await productionEditor():await dashboard();else if(parts[0]==='app'&&parts[1]==='production'&&parts[3]==='edit')html=await productionEditor(parts[2]);else if(raw==='/app/reservations')html=await reservationsPage();else if(parts[0]==='app'&&parts[1]==='messages')html=await messagesPage(parts[2]||'');else if(raw==='/app/annonces')html=await announcements();else if(raw==='/app/notifications')html=await notificationsPage();else if(raw==='/app/personnalisation')html=await profileCustomizer();else if(raw==='/app/statistiques')html=await statsPage();else if(raw==='/app/parametres')html=await settingsPage();else if(raw==='/admin')html=state.user.role==='Admin'?await adminPage():await dashboard();else html=notFound();if(token!==state.routeToken)return;app.innerHTML=html;bind();bindMotionEffects();syncPlayer();window.scrollTo({top:0,behavior:'instant'});}catch(e){console.error(e);app.innerHTML=`<div class="empty-state full-page"><strong>Une erreur est survenue</strong><p>${esc(e.message)}</p><button class="btn primary" data-nav="/app">Réessayer</button></div>`;bind();}}
 function route(){app.classList.remove('route-loading');void app.offsetWidth;app.classList.add('route-loading');const run=()=>renderRoute().finally(()=>setTimeout(()=>app.classList.remove('route-loading'),500));if(document.startViewTransition&&app.innerHTML&&!matchMedia('(prefers-reduced-motion: reduce)').matches)document.startViewTransition(run);else run();}
 
-async function playBeat(id){
- try{
-  const beat=await service.getBeat(id);if(!beat)return;
-  if(state.current?.id===id&&!audio.paused){audio.pause();state.isPlaying=false;route();return;}
-  const source=mediaSourceForBeat(beat);
-  if(!source){state.current=beat;state.isPlaying=false;route();toast('Aucune préécoute MP3/WAV n’est associée à cette production.','error');return;}
-  if(state.current?.id!==id||audio.src!==new URL(source,location.href).href){state.current=beat;audio.pause();audio.src=source;audio.load();}
-  await audio.play();
-  state.isPlaying=true;
-  route();
- }catch(error){
-  console.error('[DanaTrap audio]',error,audio.error);
-  state.isPlaying=false;
-  route();
-  toast(audio.error?audioErrorText():(error?.message||'Impossible de lancer la préécoute.'),'error');
- }
-}
+function playBeat(id){service.getBeat(id).then(b=>{if(!b)return;if(state.current?.id===id){if(audio.paused){audio.play().catch(()=>{});state.isPlaying=true;}else{audio.pause();state.isPlaying=false;}}else{state.current=b;audio.src=b.audio||b.preview_url||'';audio.play().catch(()=>toast('La préécoute distante nécessite la configuration Drive.','error'));state.isPlaying=true;}route();});}
 function next(){service.listBeats({publicOnly:true}).then(bs=>{const i=state.current?bs.findIndex(x=>x.id===state.current.id):-1;if(bs.length)playBeat(bs[(i+1)%bs.length].id);});}
 function prev(){service.listBeats({publicOnly:true}).then(bs=>{const i=state.current?bs.findIndex(x=>x.id===state.current.id):0;if(bs.length)playBeat(bs[(i-1+bs.length)%bs.length].id);});}
 function syncPlayer(){if(!state.current)return;const p=document.getElementById('progress'),ct=document.getElementById('current-time'),dur=document.getElementById('duration'),vol=document.getElementById('volume');audio.ontimeupdate=()=>{if(p&&audio.duration)p.value=String(audio.currentTime/audio.duration*100);if(ct)ct.textContent=formatTime(audio.currentTime);if(dur&&audio.duration)dur.textContent=formatTime(audio.duration);};audio.onended=next;if(p)p.oninput=()=>{if(audio.duration)audio.currentTime=Number(p.value)/100*audio.duration;};if(vol)vol.oninput=()=>audio.volume=Number(vol.value);}
@@ -178,39 +137,10 @@ function bind(){document.querySelectorAll('[data-nav]').forEach(el=>el.onclick=e
  document.querySelector('[data-demo-comment]')?.addEventListener('submit',e=>{e.preventDefault();toast('Commentaire horodaté ajouté');e.target.reset();});document.getElementById('settings-form')?.addEventListener('submit',e=>{e.preventDefault();toast('Paramètres enregistrés');});document.querySelector('[data-admin-add-user]')?.addEventListener('click',()=>{state.modal={type:'addUser'};route();});const auf=document.getElementById('admin-add-user-form');if(auf)auf.onsubmit=async e=>{e.preventDefault();const fd=new FormData(auf);await service.adminCreateUser(Object.fromEntries(fd));state.modal=null;toast('Utilisateur ajouté');route();};document.querySelectorAll('[data-admin-role]').forEach(el=>el.onchange=async()=>{await service.adminSetUserRole(el.dataset.adminRole,el.value);toast('Rôle modifié');});document.querySelectorAll('[data-admin-delete-user]').forEach(el=>el.onclick=async()=>{if(confirm('Supprimer ce compte et ses contenus ?')){await service.adminDeleteUser(el.dataset.adminDeleteUser);toast('Utilisateur supprimé');route();}});document.querySelector('[data-reset-demo]')?.addEventListener('click',async()=>{if(confirm('Réinitialiser toutes les données de démonstration ?')){await service.resetDemo();state.user=null;location.hash='#/connexion';}});}
 function bindRemoveLicenses(){document.querySelectorAll('[data-remove-license]').forEach(el=>el.onclick=()=>el.closest('[data-license-row]')?.remove());}
 function updateBeatPreview(form){const fd=new FormData(form);const current={id:'preview',title:fd.get('title')||'Titre de la production',producer_name:state.user.name,producer_slug:state.user.id,bpm:fd.get('bpm')||140,key:fd.get('key')||'C min',genre:fd.get('genre')||'Trap',mood:fd.get('mood')||'Sombre',plays:0,likes:0,duration:'2:48',coverClass:'cover-a',visibility:fd.get('visibility')||'Brouillon',tags:[],design:{accent:fd.get('accent'),secondary:fd.get('secondary'),background:fd.get('background'),titleFont:fd.get('titleFont'),infoLayout:fd.get('infoLayout'),overlay:Number(fd.get('overlay')),cardRadius:Number(fd.get('cardRadius'))}};const target=document.getElementById('beat-preview');if(target){target.innerHTML=beatCard(current,{owner:true});bind();}}
-async function handleProductionSubmit(e,form){
- e.preventDefault();
- const btn=form.querySelector('button[type="submit"]');btn.disabled=true;btn.textContent='Enregistrement…';
- try{
-  const fd=new FormData(form),previewInput=form.elements.preview.files[0];
-  let old=fd.get('id')?await service.getBeat(fd.get('id')):null;
-  let measuredDuration=null;
-  if(previewInput)measuredDuration=await validatePreviewFile(previewInput);
-  const design={...(old?.design||{}),accent:fd.get('accent'),secondary:fd.get('secondary'),background:fd.get('background'),titleFont:fd.get('titleFont'),infoLayout:fd.get('infoLayout'),overlay:Number(fd.get('overlay')),cardRadius:Number(fd.get('cardRadius'))};
-  const playFile=form.elements.playIcon.files[0],pauseFile=form.elements.pauseIcon.files[0];
-  if(playFile)design.customPlayIcon=await fileDataUrl(playFile);if(pauseFile)design.customPauseIcon=await fileDataUrl(pauseFile);
-  let beat=await service.saveBeat(state.user,{...(old||{}),id:old?.id,producer_id:fd.get('producer_id')||old?.producer_id||state.user.id,title:fd.get('title'),visibility:fd.get('visibility'),bpm:Number(fd.get('bpm')),key:fd.get('key'),genre:fd.get('genre'),mood:fd.get('mood'),description:fd.get('description'),tags:String(fd.get('tags')).split(',').map(x=>x.trim()).filter(Boolean),duration:measuredDuration?formatTime(measuredDuration):(old?.duration||'0:00'),design,licenses:collectLicenses(form)});
-  const files=[['preview','preview'],['wav','wav'],['project','project'],['stems','stems'],['cover','cover']],uploaded=[...(old?.files||[])];
-  for(const [field,kind] of files){
-   const file=form.elements[field].files[0];if(!file)continue;
-   if(window.DRSXData.isDemo()&&kind==='cover'){beat.coverImage=await imageDataUrl(file);continue;}
-   const progress=document.getElementById('upload-progress');progress.classList.remove('hidden');
-   const result=await service.uploadFile(state.user,file,{kind,beatId:beat.id},p=>{progress.querySelector('span').style.width=p+'%';progress.querySelector('strong').textContent=p+'%';});
-   if(kind==='preview'&&result.stream_url&&!window.DRSXData.isDemo())beat.audio=result.stream_url;
-   if(kind==='cover'&&result.stream_url)beat.coverImage=result.stream_url;
-   else{
-    const previousIndex=uploaded.findIndex(item=>item.kind===kind);
-    const item={name:file.name,kind,size:`${(file.size/1024/1024).toFixed(1)} Mo`,drive_id:result.id,stream_url:result.stream_url||''};
-    if(previousIndex>=0)uploaded.splice(previousIndex,1,item);else uploaded.push(item);
-   }
-  }
-  beat=await service.saveBeat(state.user,{...beat,files:uploaded});
-  toast('Production enregistrée et préécoute vérifiée');location.hash='#/app/productions';
- }catch(err){console.error(err);toast(err.message,'error');btn.disabled=false;btn.textContent='Enregistrer la production';}
-}
+async function handleProductionSubmit(e,form){e.preventDefault();const btn=form.querySelector('button[type="submit"]');btn.disabled=true;btn.textContent='Enregistrement…';try{const fd=new FormData(form);let old=fd.get('id')?await service.getBeat(fd.get('id')):null;const design={...(old?.design||{}),accent:fd.get('accent'),secondary:fd.get('secondary'),background:fd.get('background'),titleFont:fd.get('titleFont'),infoLayout:fd.get('infoLayout'),overlay:Number(fd.get('overlay')),cardRadius:Number(fd.get('cardRadius'))};const playFile=form.elements.playIcon.files[0],pauseFile=form.elements.pauseIcon.files[0];if(playFile)design.customPlayIcon=await fileDataUrl(playFile);if(pauseFile)design.customPauseIcon=await fileDataUrl(pauseFile);let beat=await service.saveBeat(state.user,{...(old||{}),id:old?.id,producer_id:fd.get('producer_id')||old?.producer_id||state.user.id,title:fd.get('title'),visibility:fd.get('visibility'),bpm:Number(fd.get('bpm')),key:fd.get('key'),genre:fd.get('genre'),mood:fd.get('mood'),description:fd.get('description'),tags:String(fd.get('tags')).split(',').map(x=>x.trim()).filter(Boolean),design,licenses:collectLicenses(form)});const files=[['preview','preview'],['wav','wav'],['project','project'],['stems','stems'],['cover','cover']];const uploaded=[...(old?.files||[])];for(const [field,kind] of files){const file=form.elements[field].files[0];if(!file)continue;if(window.DRSXData.isDemo()&&kind==='cover'){beat.coverImage=await imageDataUrl(file);continue;}const progress=document.getElementById('upload-progress');progress.classList.remove('hidden');const result=await service.uploadFile(state.user,file,{kind,beatId:beat.id},p=>{progress.querySelector('span').style.width=p+'%';progress.querySelector('strong').textContent=p+'%';});if(kind==='preview'&&result.stream_url&&!window.DRSXData.isDemo())beat.audio=result.stream_url;if(kind==='cover'&&result.stream_url)beat.coverImage=result.stream_url;else uploaded.push({name:file.name,kind,size:`${(file.size/1024/1024).toFixed(1)} Mo`,drive_id:result.id,stream_url:result.stream_url||''});}beat=await service.saveBeat(state.user,{...beat,files:uploaded});toast('Production enregistrée');location.hash='#/app/productions';}catch(err){console.error(err);toast(err.message,'error');btn.disabled=false;btn.textContent='Enregistrer la production';}}
 function updateProfilePreview(form){const fd=new FormData(form),box=document.getElementById('profile-preview');if(!box)return;box.style.setProperty('--profile-accent',fd.get('accent'));box.style.setProperty('--profile-secondary',fd.get('secondary'));box.style.setProperty('--profile-bg',fd.get('background'));box.style.setProperty('--profile-radius',fd.get('cardRadius')+'px');box.className=`profile-preview frame-${fd.get('frameStyle')} effect-${fd.get('profileEffect')}`;box.querySelector('h2').textContent=fd.get('name')||'Ton nom';box.querySelector('p').textContent=fd.get('bio')||'Ta biographie';}
 async function handleProfileSubmit(e,form){e.preventDefault();const fd=new FormData(form),old=await service.getProfile(state.user.id),theme={...(old.theme||{}),accent:fd.get('accent'),secondary:fd.get('secondary'),background:fd.get('background'),profileEffect:fd.get('profileEffect'),frameStyle:fd.get('frameStyle'),buttonStyle:fd.get('buttonStyle'),cardRadius:Number(fd.get('cardRadius')),cardBorder:fd.get('cardBorder')};const imgFields=['avatar','banner','backgroundImage','customPlayIcon','customPauseIcon'];const values={};for(const f of imgFields){const file=form.elements[f]?.files[0];if(!file)continue;if(window.DRSXData.isDemo())values[f]=await imageDataUrl(file,f.includes('Icon')?320:1600,.86);else{const uploaded=await service.uploadFile(state.user,file,{kind:'cover',beatId:`profile-${state.user.id}`},p=>{});values[f]=uploaded.stream_url;}}if(values.backgroundImage)theme.backgroundImage=values.backgroundImage;if(values.customPlayIcon)theme.customPlayIcon=values.customPlayIcon;if(values.customPauseIcon)theme.customPauseIcon=values.customPauseIcon;const p=await service.saveProfile(state.user.id,{name:fd.get('name'),username:fd.get('username'),location:fd.get('location'),bio:fd.get('bio'),avatar:values.avatar||old.avatar,banner:values.banner||old.banner,socials:{instagram:fd.get('instagram'),youtube:fd.get('youtube'),tiktok:fd.get('tiktok'),twitch:fd.get('twitch')},theme});if(isCreator()&&(values.customPlayIcon||values.customPauseIcon)){const bs=await service.listBeats({producer_id:state.user.id});for(const b of bs)await service.saveBeat(state.user,{...b,design:{...b.design,customPlayIcon:values.customPlayIcon||b.design?.customPlayIcon,customPauseIcon:values.customPauseIcon||b.design?.customPauseIcon}});}state.user.name=p.name;toast('Profil entièrement personnalisé');location.hash=`#/profile/${p.slug}`;}
 function bindMotionEffects(){document.querySelectorAll('.beat-card,.feature-card,.creator-card,.license-card,.stat-card,.announcement-card,.reservation-row').forEach(card=>{card.onpointermove=e=>{const r=card.getBoundingClientRect();card.style.setProperty('--mx',`${(e.clientX-r.left)/r.width*100}%`);card.style.setProperty('--my',`${(e.clientY-r.top)/r.height*100}%`);};card.onpointerleave=()=>{card.style.removeProperty('--mx');card.style.removeProperty('--my');};});}
 
-window.addEventListener('hashchange',route);audio.volume=.75;audio.crossOrigin='anonymous';audio.onplay=()=>{state.isPlaying=true;};audio.onpause=()=>{state.isPlaying=false;};audio.onerror=()=>{state.isPlaying=false;console.error('[DanaTrap audio element]',audio.error,audio.currentSrc);toast(audioErrorText(),'error');route();};(async()=>{if(!window.DRSXData.isDemo()&&(window.DRSX_CONFIG?.apiBaseUrl||window.DRSX_CONFIG?.driveWorkerUrl)){fetch(`${String(window.DRSX_CONFIG.apiBaseUrl||window.DRSX_CONFIG.driveWorkerUrl).replace(/\/$/,'')}/health`,{cache:'no-store'}).catch(()=>{});}try{state.user=await service.init();}catch(e){console.warn('Mode distant indisponible, vérifie config.js',e);toast('Configuration distante incomplète : utilise le mode démo ou renseigne config.js.','error');}activateSubscription();if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./service-worker.js').catch(()=>{});route();})();
+window.addEventListener('hashchange',route);audio.volume=.75;audio.onplay=()=>state.isPlaying=true;audio.onpause=()=>state.isPlaying=false;(async()=>{if(!window.DRSXData.isDemo()&&(window.DRSX_CONFIG?.apiBaseUrl||window.DRSX_CONFIG?.driveWorkerUrl)){fetch(`${String(window.DRSX_CONFIG.apiBaseUrl||window.DRSX_CONFIG.driveWorkerUrl).replace(/\/$/,'')}/health`,{cache:'no-store'}).catch(()=>{});}try{state.user=await service.init();}catch(e){console.warn('Mode distant indisponible, vérifie config.js',e);toast('Configuration distante incomplète : utilise le mode démo ou renseigne config.js.','error');}activateSubscription();if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./service-worker.js').catch(()=>{});route();})();
 })();

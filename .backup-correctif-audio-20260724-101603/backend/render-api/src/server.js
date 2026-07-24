@@ -3,7 +3,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = '4.3.0';
+const VERSION = '4.1.0';
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
@@ -230,74 +230,6 @@ function publicOrigin(req) {
   return String(process.env.RENDER_EXTERNAL_URL || `${proto}://${req.headers.host}`).replace(/\/$/, '');
 }
 
-const MIME_BY_EXTENSION = new Map([
-  ['mp3', 'audio/mpeg'], ['wav', 'audio/wav'], ['wave', 'audio/wav'],
-  ['m4a', 'audio/mp4'], ['aac', 'audio/aac'], ['ogg', 'audio/ogg'],
-  ['opus', 'audio/ogg; codecs=opus'], ['flac', 'audio/flac'], ['webm', 'audio/webm'],
-  ['jpg', 'image/jpeg'], ['jpeg', 'image/jpeg'], ['png', 'image/png'],
-  ['webp', 'image/webp'], ['gif', 'image/gif'], ['svg', 'image/svg+xml']
-]);
-
-function safeFileName(name = 'media') {
-  return String(name).replace(/[\r\n\"]/g, '_').slice(0, 220) || 'media';
-}
-
-function contentDisposition(name = 'media') {
-  const safe = safeFileName(name);
-  const ascii = safe.replace(/[^\x20-\x7E]/g, '_');
-  return `inline; filename=\"${ascii}\"; filename*=UTF-8''${encodeURIComponent(safe)}`;
-}
-
-function mediaMime(metadata = {}, responseType = '') {
-  const reported = String(responseType || metadata.mimeType || '').trim().toLowerCase();
-  if (reported && reported !== 'application/octet-stream') return reported;
-  const match = String(metadata.name || '').toLowerCase().match(/\.([a-z0-9]+)$/);
-  return (match && MIME_BY_EXTENSION.get(match[1])) || 'application/octet-stream';
-}
-
-async function driveMetadata(token, fileId) {
-  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,size,appProperties`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (!response.ok) {
-    const error = new Error(`MEDIA_METADATA_${response.status}:${(await response.text()).slice(0, 250)}`);
-    error.status = response.status === 404 ? 404 : 502;
-    throw error;
-  }
-  return response.json();
-}
-
-async function pipeDriveMedia(req, res, fileId, token, metadata, cacheControl = 'private, max-age=3600') {
-  const guessedType = mediaMime(metadata);
-  if (req.method === 'HEAD') {
-    applyHeaders(req, res);
-    res.statusCode = 200;
-    res.setHeader('Content-Type', guessedType);
-    if (metadata.size) res.setHeader('Content-Length', String(metadata.size));
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Content-Disposition', contentDisposition(metadata.name));
-    res.setHeader('Cache-Control', cacheControl);
-    return res.end();
-  }
-
-  const headers = { Authorization: `Bearer ${token}` };
-  if (req.headers.range) headers.Range = req.headers.range;
-  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, { headers });
-  applyHeaders(req, res);
-  res.statusCode = response.status;
-  const responseType = response.headers.get('content-type') || '';
-  res.setHeader('Content-Type', mediaMime(metadata, responseType));
-  for (const header of ['content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
-    const value = response.headers.get(header);
-    if (value) res.setHeader(header, value);
-  }
-  if (!res.hasHeader('Accept-Ranges')) res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Content-Disposition', contentDisposition(metadata.name));
-  res.setHeader('Cache-Control', cacheControl);
-  if (!response.ok || !response.body) return res.end();
-  return Readable.fromWeb(response.body).pipe(res);
-}
-
 async function createUploadSession(req, res) {
   const user = await verifyUser(req);
   const { name, size, mimeType, kind = 'other', beatId = '' } = await readJson(req);
@@ -361,34 +293,29 @@ async function uploadChunk(req, res) {
   const file = await response.json();
   const kind = String(req.headers['x-upload-kind'] || 'other');
   let stream_url = '';
-  let signed_stream_url = '';
   if (['preview', 'cover'].includes(kind)) {
-    // URL stable pour les médias publics. Le serveur vérifie toujours dans Drive
-    // que le fichier a bien été créé par DanaTrap et qu'il s'agit d'une preview/couverture.
-    stream_url = `${publicOrigin(req)}/public-media/${encodeURIComponent(file.id)}`;
     const ttl = Math.max(3600, Number(process.env.MEDIA_LINK_TTL_SECONDS || 31536000));
     const exp = Math.floor(Date.now() / 1000) + ttl;
-    signed_stream_url = `${publicOrigin(req)}/media/${encodeURIComponent(file.id)}?exp=${exp}&sig=${encodeURIComponent(signMedia(file.id, exp))}`;
+    stream_url = `${publicOrigin(req)}/media/${encodeURIComponent(file.id)}?exp=${exp}&sig=${encodeURIComponent(signMedia(file.id, exp))}`;
   }
-  return sendJson(req, res, 200, { ...file, kind, stream_url, signed_stream_url });
+  return sendJson(req, res, 200, { ...file, kind, stream_url });
 }
 
 async function streamMedia(req, res, fileId, url) {
   if (!verifyMediaSignature(fileId, url.searchParams.get('exp'), url.searchParams.get('sig'))) return sendJson(req, res, 403, { error: 'Lien expiré ou invalide.' });
   const token = await googleAccessToken();
-  const metadata = await driveMetadata(token, fileId);
-  return pipeDriveMedia(req, res, fileId, token, metadata, 'private, max-age=3600');
-}
-
-async function streamPublicMedia(req, res, fileId) {
-  const token = await googleAccessToken();
-  const metadata = await driveMetadata(token, fileId);
-  const props = metadata.appProperties || {};
-  const kind = String(props.kind || '');
-  if (String(props.danatrap || '') !== 'true' || !['preview', 'cover'].includes(kind)) {
-    return sendJson(req, res, 403, { error: 'Ce fichier n’est pas un média public DanaTrap.' });
+  const headers = { Authorization: `Bearer ${token}` };
+  if (req.headers.range) headers.Range = req.headers.range;
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, { headers });
+  applyHeaders(req, res);
+  res.statusCode = response.status;
+  for (const header of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+    const value = response.headers.get(header);
+    if (value) res.setHeader(header, value);
   }
-  return pipeDriveMedia(req, res, fileId, token, metadata, 'public, max-age=3600, stale-while-revalidate=86400');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  if (!response.body) return res.end();
+  return Readable.fromWeb(response.body).pipe(res);
 }
 
 async function listUsers(req, res) {
@@ -472,10 +399,7 @@ const server = http.createServer(async (req, res) => {
       if (!rateAllowed(req, 'upload-chunk', 600)) return sendJson(req, res, 429, { error: 'Trop de morceaux envoyés en une minute.' });
       return await uploadChunk(req, res);
     }
-    if (['GET', 'HEAD'].includes(req.method) && url.pathname.startsWith('/public-media/')) {
-      return await streamPublicMedia(req, res, decodeURIComponent(url.pathname.slice('/public-media/'.length)));
-    }
-    if (['GET', 'HEAD'].includes(req.method) && url.pathname.startsWith('/media/')) {
+    if (req.method === 'GET' && url.pathname.startsWith('/media/')) {
       return await streamMedia(req, res, decodeURIComponent(url.pathname.slice('/media/'.length)), url);
     }
     if (req.method === 'GET' && url.pathname === '/admin/users') {

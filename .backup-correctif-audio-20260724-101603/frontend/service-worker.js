@@ -1,4 +1,4 @@
-const CACHE='drsx-v4.3-audio';
+const CACHE='drsx-v4.1-render';
 const STATIC=['./','./index.html','./assets/styles.css','./assets/data-service.js','./assets/app.js','./manifest.webmanifest','./icon.svg','./icon-192.png','./icon-512.png'];
 
 self.addEventListener('install',event=>{
@@ -20,17 +20,10 @@ self.addEventListener('fetch',event=>{
     return;
   }
 
-  const freshAsset=request.mode==='navigate'||/\/(index\.html|assets\/(app\.js|data-service\.js|styles\.css))$/.test(url.pathname);
-  if(freshAsset){
-    event.respondWith(fetch(request,{cache:'no-store'}).then(response=>{
+  event.respondWith(
+    caches.match(request).then(cached=>cached||fetch(request).then(response=>{
       if(response.ok){const copy=response.clone();caches.open(CACHE).then(cache=>cache.put(request,copy));}
       return response;
-    }).catch(()=>caches.match(request).then(cached=>cached||(request.mode==='navigate'?caches.match('./index.html'):undefined))));
-    return;
-  }
-
-  event.respondWith(caches.match(request).then(cached=>cached||fetch(request).then(response=>{
-    if(response.ok){const copy=response.clone();caches.open(CACHE).then(cache=>cache.put(request,copy));}
-    return response;
-  })));
+    }).catch(()=>request.mode==='navigate'?caches.match('./index.html'):undefined))
+  );
 });
