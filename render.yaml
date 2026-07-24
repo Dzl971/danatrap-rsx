@@ -13,7 +13,7 @@ services:
       - key: DRSX_SUPABASE_ANON_KEY
         sync: false
       - key: DRSX_ADMIN_EMAIL
-        value: admin@danatrap.fr
+        value: Prod.dzl971@gmail.com
       - key: DRSX_API_URL
         fromService:
           type: web
@@ -64,7 +64,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: ADMIN_EMAIL
-        value: admin@danatrap.fr
+        value: Prod.dzl971@gmail.com
       - key: ALLOWED_ORIGINS
         sync: false
       - key: MEDIA_LINK_TTL_SECONDS
