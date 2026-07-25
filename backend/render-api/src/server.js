@@ -3,7 +3,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = '5.0.1-phase2';
+const VERSION = '5.0.0-phase3';
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
@@ -388,7 +388,7 @@ async function streamPublicMedia(req, res, fileId) {
   if (String(props.danatrap || '') !== 'true' || !['preview', 'cover'].includes(kind)) {
     return sendJson(req, res, 403, { error: 'Ce fichier n’est pas un média public DanaTrap.' });
   }
-  return pipeDriveMedia(req, res, fileId, token, metadata, 'public, max-age=3600, stale-while-revalidate=86400');
+  return pipeDriveMedia(req, res, fileId, token, metadata, 'public, max-age=604800, stale-while-revalidate=2592000, immutable');
 }
 
 async function listUsers(req, res) {
