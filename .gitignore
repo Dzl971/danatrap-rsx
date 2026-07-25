@@ -19,3 +19,13 @@ Thumbs.db
 *.log
 .tmp/
 tmp/
+
+# Fichiers privés locaux supplémentaires
+.danatrap-deploy.local.json
+secrets.txt
+secrets-*.txt
+cles-privees*.txt
+identifiants-prives*.txt
+
+# Sauvegardes locales DanaTrap RSX
+.drsx-backups/

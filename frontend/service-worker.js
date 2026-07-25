@@ -1,4 +1,4 @@
-const CACHE='drsx-v5-phase2';
+const CACHE='drsx-v5-phase2-1';
 const STATIC=['./','./index.html','./assets/styles.css','./assets/data-service.js','./assets/app.js','./manifest.webmanifest','./icon.svg','./icon-192.png','./icon-512.png'];
 
 self.addEventListener('install',event=>{

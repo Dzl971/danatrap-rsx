@@ -163,7 +163,15 @@ class SupabaseService extends LocalService{
   async updateReservation(user,id,status,reason=''){const {data,error}=await this.sb.rpc('decide_reservation_v5',{p_reservation_id:id,p_decision:status,p_reason:reason});if(error)throw error;return data;}
   async cancelReservation(user,id,reason=''){const {data,error}=await this.sb.rpc('cancel_reservation_v5',{p_reservation_id:id,p_reason:reason});if(error)throw error;return data;}
   async listWaitlist(user){const {data,error}=await this.sb.from('beat_waitlist').select('*, beats(id,slug,title,cover_image,cover_class,producer_name,bpm,key,visibility)').eq('user_id',user.id).in('status',['waiting','notified']).order('created_at',{ascending:true});if(error)throw error;return data||[];}
-  async listConversations(user){const {data,error}=await this.sb.from('conversation_members').select('conversation_id, conversations(*, conversation_members(user_id, profiles(*)), messages(*))').eq('user_id',user.id);if(error)throw error;return (data||[]).map(x=>{const c=x.conversations;return {...c,members_profiles:(c.conversation_members||[]).map(m=>m.profiles).filter(Boolean),last_message:(c.messages||[]).sort((a,b)=>b.created_at.localeCompare(a.created_at))[0]||null};}).sort((a,b)=>b.updated_at.localeCompare(a.updated_at));}
+  async listConversations(user){
+    const {data:memberships,error:membershipError}=await this.sb.from('conversation_members').select('conversation_id').eq('user_id',user.id);
+    if(membershipError)throw membershipError;
+    const ids=[...new Set((memberships||[]).map(row=>row.conversation_id).filter(Boolean))];
+    if(!ids.length)return [];
+    const {data,error}=await this.sb.from('conversations').select('*, conversation_members(user_id, profiles(*)), messages(*)').in('id',ids).order('updated_at',{ascending:false});
+    if(error)throw error;
+    return (data||[]).filter(Boolean).map(c=>({...c,members_profiles:(c.conversation_members||[]).map(m=>m.profiles).filter(Boolean),last_message:(c.messages||[]).sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)))[0]||null}));
+  }
   async getConversation(user,id){const {data,error}=await this.sb.from('conversations').select('*, conversation_members(user_id, profiles(*)), messages(*, message_reads(*))').eq('id',id).maybeSingle();if(error)throw error;if(!data)return null;return {...data,members_profiles:(data.conversation_members||[]).map(m=>m.profiles).filter(Boolean),messages:(data.messages||[]).sort((a,b)=>a.created_at.localeCompare(b.created_at))};}
   async sendMessage(user,conversationId,text){const clean=String(text||'').trim();if(!clean)throw new Error('Le message est vide.');const {data,error}=await this.sb.from('messages').insert({conversation_id:conversationId,sender_id:user.id,type:'text',text:clean}).select('*, message_reads(*)').single();if(error)throw error;return data;}
   async updateLastSeen(user=this.cachedUser){if(!user?.id)return now();const stamp=now();const {error}=await this.sb.from('profiles').update({last_seen_at:stamp}).eq('user_id',user.id);if(error)console.warn('Dernière connexion non mise à jour',error);return stamp;}

@@ -3,7 +3,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = '5.0.0-phase2';
+const VERSION = '5.0.1-phase2';
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
