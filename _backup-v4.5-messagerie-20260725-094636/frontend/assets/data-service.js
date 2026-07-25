@@ -115,10 +115,6 @@ class LocalService{
   async adminDeleteUser(id){this.store.users=this.store.users.filter(u=>u.id!==id);this.store.profiles=this.store.profiles.filter(p=>p.user_id!==id);this.store.beats=this.store.beats.filter(b=>b.producer_id!==id);this.persist();}
   async adminSetUserRole(id,role){const u=this.store.users.find(x=>x.id===id);if(u)u.role=role;const p=this.store.profiles.find(x=>x.user_id===id);if(p)p.role=role;this.persist();}
   async adminCreateUser(data){const previous=localStorage.getItem(this.sessionKey);const created=await this.register(data);if(previous)localStorage.setItem(this.sessionKey,previous);else localStorage.removeItem(this.sessionKey);return created;}
-  async updateLastSeen(user){const p=this.store.profiles.find(x=>x.user_id===user?.id);if(p){p.last_seen_at=now();this.persist();}return p?.last_seen_at||now();}
-  async markConversationRead(user,conversationId){const readAt=now();for(const m of this.store.messages.filter(x=>x.conversation_id===conversationId&&x.sender_id!==user.id)){m.message_reads=m.message_reads||[];const r=m.message_reads.find(x=>x.user_id===user.id);if(r)r.read_at=readAt;else m.message_reads.push({message_id:m.id,conversation_id:conversationId,user_id:user.id,read_at:readAt});}this.persist();return readAt;}
-  startPresence(user,callback){callback?.({onlineIds:new Set([user.id]),presences:new Map([[user.id,{user_id:user.id,name:user.name,online_at:now()}]])});return ()=>{};}
-  openConversationRealtime(user,conversationId,handlers={}){return{sendTyping:async(isTyping)=>handlers.typing?.({user_id:user.id,name:user.name,is_typing:isTyping}),sendRead:async(readAt)=>handlers.read?.({user_id:user.id,read_at:readAt||now()}),close:()=>{}};}
   subscribe(){return ()=>{};}
   async resetDemo(){this.store=seed();this.persist();localStorage.removeItem(this.sessionKey);}
 }
@@ -144,7 +140,7 @@ class SupabaseService extends LocalService{
   currentUser(){return this.cachedUser;}
   async login(email,password){const {data,error}=await this.sb.auth.signInWithPassword({email,password});if(error)throw error;this.session=data.session;this.cachedUser=await this.hydrateUser(data.session);return this.cachedUser;}
   async register({name,email,password,role}){const {data,error}=await this.sb.auth.signUp({email,password,options:{data:{name,role}}});if(error)throw error;this.session=data.session;this.cachedUser=data.session?await this.hydrateUser(data.session):{id:data.user.id,email,name,role,initials:name.slice(0,2).toUpperCase()};return this.cachedUser;}
-  async logout(){if(this.cachedUser)await this.updateLastSeen(this.cachedUser);await this.sb.auth.signOut();this.session=null;this.cachedUser=null;}
+  async logout(){await this.sb.auth.signOut();this.session=null;this.cachedUser=null;}
   async listProfiles(role='',query=''){let q=this.sb.from('profiles').select('*').order('followers',{ascending:false});if(role)q=q.eq('role',role);if(query)q=q.or(`name.ilike.%${query}%,username.ilike.%${query}%,bio.ilike.%${query}%`);const {data,error}=await q;if(error)throw error;return data;}
   async getProfile(ref){const value=String(ref||'').trim();if(!value)return null;let q=this.sb.from('profiles').select('*');q=isUuid(value)?q.eq('user_id',value):q.eq('slug',value);const {data,error}=await q.maybeSingle();if(error)throw error;return data;}
   async saveProfile(userId,patch){const {data,error}=await this.sb.from('profiles').update(patch).eq('user_id',userId).select().single();if(error)throw error;return data;}
@@ -156,42 +152,8 @@ class SupabaseService extends LocalService{
   async listReservations(user){let q=this.sb.from('reservations').select('*').order('created_at',{ascending:false});if(user.role!=='Admin')q=q.or(`artist_id.eq.${user.id},beatmaker_id.eq.${user.id}`);const {data,error}=await q;if(error)throw error;return data;}
   async updateReservation(user,id,status){const {data,error}=await this.sb.from('reservations').update({status}).eq('id',id).select().single();if(error)throw error;return data;}
   async listConversations(user){const {data,error}=await this.sb.from('conversation_members').select('conversation_id, conversations(*, conversation_members(user_id, profiles(*)), messages(*))').eq('user_id',user.id);if(error)throw error;return (data||[]).map(x=>{const c=x.conversations;return {...c,members_profiles:(c.conversation_members||[]).map(m=>m.profiles).filter(Boolean),last_message:(c.messages||[]).sort((a,b)=>b.created_at.localeCompare(a.created_at))[0]||null};}).sort((a,b)=>b.updated_at.localeCompare(a.updated_at));}
-  async getConversation(user,id){const {data,error}=await this.sb.from('conversations').select('*, conversation_members(user_id, profiles(*)), messages(*, message_reads(*))').eq('id',id).maybeSingle();if(error)throw error;if(!data)return null;return {...data,members_profiles:(data.conversation_members||[]).map(m=>m.profiles).filter(Boolean),messages:(data.messages||[]).sort((a,b)=>a.created_at.localeCompare(b.created_at))};}
-  async sendMessage(user,conversationId,text){const clean=String(text||'').trim();if(!clean)throw new Error('Le message est vide.');const {data,error}=await this.sb.from('messages').insert({conversation_id:conversationId,sender_id:user.id,type:'text',text:clean}).select('*, message_reads(*)').single();if(error)throw error;return data;}
-  async updateLastSeen(user=this.cachedUser){if(!user?.id)return now();const stamp=now();const {error}=await this.sb.from('profiles').update({last_seen_at:stamp}).eq('user_id',user.id);if(error)console.warn('Dernière connexion non mise à jour',error);return stamp;}
-  async markConversationRead(user,conversationId){if(!conversationId)return null;const {data,error}=await this.sb.rpc('mark_conversation_read',{p_conversation_id:conversationId});if(error)throw error;return data||now();}
-  startPresence(user,callback){
-    if(!this.sb||!user?.id)return ()=>{};
-    const key=`${user.id}:${Math.random().toString(36).slice(2,9)}`;
-    const channel=this.sb.channel('presence:global',{config:{private:true,presence:{key}}});
-    const emit=()=>{const raw=channel.presenceState();const presences=new Map();for(const entries of Object.values(raw||{})){for(const meta of entries||[]){if(meta?.user_id)presences.set(meta.user_id,meta);}}callback?.({onlineIds:new Set(presences.keys()),presences});};
-    channel.on('presence',{event:'sync'},emit).on('presence',{event:'join'},emit).on('presence',{event:'leave'},emit).subscribe(async status=>{if(status==='SUBSCRIBED'){await channel.track({user_id:user.id,name:user.name,role:user.role,online_at:now(),page:location.hash||'#/app'});await this.updateLastSeen(user);}});
-    const heartbeat=setInterval(()=>{if(document.visibilityState==='visible'){channel.track({user_id:user.id,name:user.name,role:user.role,online_at:now(),page:location.hash||'#/app'});this.updateLastSeen(user);}},60000);
-    const onVisibility=()=>{if(document.visibilityState==='visible')channel.track({user_id:user.id,name:user.name,role:user.role,online_at:now(),page:location.hash||'#/app'});else this.updateLastSeen(user);};
-    document.addEventListener('visibilitychange',onVisibility);
-    return ()=>{clearInterval(heartbeat);document.removeEventListener('visibilitychange',onVisibility);this.updateLastSeen(user);channel.untrack().catch(()=>{});this.sb.removeChannel(channel);};
-  }
-  openConversationRealtime(user,conversationId,handlers={}){
-    if(!this.sb||!conversationId)return{sendTyping:async()=>{},sendRead:async()=>{},close:()=>{}};
-    const key=`${user.id}:${Math.random().toString(36).slice(2,9)}`;
-    const channel=this.sb.channel(`conversation:${conversationId}`,{config:{private:true,presence:{key},broadcast:{self:true,ack:true}}});
-    const emitPresence=()=>{const raw=channel.presenceState();const presences=new Map();for(const entries of Object.values(raw||{})){for(const meta of entries||[]){if(meta?.user_id)presences.set(meta.user_id,meta);}}handlers.presence?.({onlineIds:new Set(presences.keys()),presences});};
-    channel
-      .on('presence',{event:'sync'},emitPresence)
-      .on('presence',{event:'join'},emitPresence)
-      .on('presence',{event:'leave'},emitPresence)
-      .on('broadcast',{event:'typing'},event=>handlers.typing?.(event.payload||{}))
-      .on('broadcast',{event:'read'},event=>handlers.read?.(event.payload||{}))
-      .on('postgres_changes',{event:'INSERT',schema:'public',table:'messages',filter:`conversation_id=eq.${conversationId}`},payload=>handlers.message?.(payload.new))
-      .on('postgres_changes',{event:'INSERT',schema:'public',table:'message_reads',filter:`conversation_id=eq.${conversationId}`},payload=>handlers.read?.(payload.new))
-      .on('postgres_changes',{event:'UPDATE',schema:'public',table:'message_reads',filter:`conversation_id=eq.${conversationId}`},payload=>handlers.read?.(payload.new))
-      .subscribe(async(status,error)=>{if(status==='SUBSCRIBED'){await channel.track({user_id:user.id,name:user.name,online_at:now(),conversation_id:conversationId});handlers.ready?.();}else if(error){console.warn('Canal conversation indisponible',error);handlers.error?.(error);}});
-    return{
-      sendTyping:isTyping=>channel.send({type:'broadcast',event:'typing',payload:{user_id:user.id,name:user.name,is_typing:Boolean(isTyping),at:now()}}),
-      sendRead:readAt=>channel.send({type:'broadcast',event:'read',payload:{user_id:user.id,read_at:readAt||now(),conversation_id:conversationId}}),
-      close:()=>{channel.untrack().catch(()=>{});this.sb.removeChannel(channel);}
-    };
-  }
+  async getConversation(user,id){const {data,error}=await this.sb.from('conversations').select('*, conversation_members(user_id, profiles(*)), messages(*)').eq('id',id).maybeSingle();if(error)throw error;if(!data)return null;return {...data,members_profiles:(data.conversation_members||[]).map(m=>m.profiles).filter(Boolean),messages:(data.messages||[]).sort((a,b)=>a.created_at.localeCompare(b.created_at))};}
+  async sendMessage(user,conversationId,text){const {data,error}=await this.sb.from('messages').insert({conversation_id:conversationId,sender_id:user.id,type:'text',text}).select().single();if(error)throw error;return data;}
   async notifications(user){const {data,error}=await this.sb.from('notifications').select('*').eq('user_id',user.id).order('created_at',{ascending:false});if(error)throw error;return data;}
   async markNotificationsRead(user){await this.sb.from('notifications').update({read:true}).eq('user_id',user.id).eq('read',false);}
   async announcements(){const {data,error}=await this.sb.from('announcements').select('*').order('created_at',{ascending:false});if(error)throw error;return data;}
@@ -207,7 +169,7 @@ class SupabaseService extends LocalService{
   async adminDeleteUser(id){const r=await fetch(`${String(CFG.apiBaseUrl||CFG.driveWorkerUrl||'').replace(/\/$/,'')}/admin/delete-user`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${this.session.access_token}`},body:JSON.stringify({userId:id})});if(!r.ok)throw new Error('Suppression impossible.');}
   async adminSetUserRole(id,role){const {error}=await this.sb.from('profiles').update({role}).eq('user_id',id);if(error)throw error;}
   async adminCreateUser(data){const r=await fetch(`${String(CFG.apiBaseUrl||CFG.driveWorkerUrl||'').replace(/\/$/,'')}/admin/create-user`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${this.session.access_token}`},body:JSON.stringify(data)});const body=await r.json().catch(()=>({}));if(!r.ok)throw new Error(body.error||'Création impossible.');return body.user;}
-  subscribe(user,callback){const channel=this.sb.channel(`drsx-user-${user.id}`).on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:`user_id=eq.${user.id}`},payload=>callback?.('notification',payload.new)).on('postgres_changes',{event:'UPDATE',schema:'public',table:'profiles'},payload=>callback?.('profile',payload.new)).subscribe();return ()=>this.sb.removeChannel(channel);}
+  subscribe(user,callback){const channel=this.sb.channel(`drsx-${user.id}`).on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:`user_id=eq.${user.id}`},payload=>callback?.('notification',payload.new)).on('postgres_changes',{event:'INSERT',schema:'public',table:'messages'},payload=>callback?.('message',payload.new)).subscribe();return ()=>this.sb.removeChannel(channel);}
 }
 
 window.DRSXData={

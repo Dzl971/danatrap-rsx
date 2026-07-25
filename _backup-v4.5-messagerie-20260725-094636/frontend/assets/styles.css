@@ -216,27 +216,3 @@ body{overflow-x:hidden}.danger-btn{background:rgba(255,85,101,.1);border:1px sol
 /* Lecteur sur les pages publiques */
 .landing .player{left:0}
 @media(max-width:900px){.landing .player{bottom:0}.landing{padding-bottom:70px}}
-
-/* DanaTrap RSX V4.5 — Messagerie temps réel */
-.avatar{position:relative;background-size:cover;background-position:center}
-.avatar[data-presence-user]:after{content:"";position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#61656f;border:2px solid #121318;box-shadow:0 0 0 1px rgba(255,255,255,.06);transition:background .2s,box-shadow .2s,transform .2s}
-.avatar[data-presence-user].online:after{background:#37db85;box-shadow:0 0 12px rgba(55,219,133,.75);transform:scale(1.08)}
-.conversation-identity{min-width:0;display:flex;flex-direction:column;gap:2px;flex:1}
-.conversation-identity h2{margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.presence-label{font-size:9px;color:#8f939d;display:inline-flex;align-items:center;gap:6px;transition:color .2s}
-.presence-label:before{content:"";width:6px;height:6px;border-radius:50%;background:#666a74;flex:none}
-.presence-label.online{color:#65e6a1}
-.presence-label.online:before{background:#37db85;box-shadow:0 0 9px rgba(55,219,133,.65)}
-.typing-indicator{height:0;opacity:0;transform:translateY(-3px);color:var(--yellow);font-size:9px;font-weight:750;transition:opacity .18s,transform .18s,height .18s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.typing-indicator.visible{height:14px;opacity:1;transform:none}
-.chat-body{scroll-behavior:smooth}
-.message-wrap{display:flex;flex-direction:column;align-items:flex-start;max-width:78%;margin:3px 0}
-.message-wrap.sent{margin-left:auto;align-items:flex-end}
-.message-wrap .message{max-width:100%;margin:0}
-.message-read{display:block;margin:5px 4px 0;color:#777b85;font-size:8px;letter-spacing:.01em}
-.message-read.seen{color:#73a8ff}
-.conversation-item .avatar{overflow:visible}
-.conversation-item.active{background:linear-gradient(90deg,rgba(246,201,14,.09),rgba(246,201,14,.02))}
-.conversation-head{position:relative}
-.conversation-head:after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;background:linear-gradient(90deg,transparent,rgba(246,201,14,.25),transparent)}
-@media(max-width:620px){.message-wrap{max-width:90%}.presence-label,.typing-indicator{font-size:8px}.conversation-head{padding-right:10px}}
