@@ -3,7 +3,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = '5.0.0-phase5';
+const VERSION = '5.0.0-phase6';
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
@@ -130,7 +130,7 @@ async function verifyUser(req) {
 async function isAdmin(user) {
   const adminEmail = String(process.env.ADMIN_EMAIL || '').toLowerCase();
   if (adminEmail && String(user.email || '').toLowerCase() === adminEmail) return true;
-  const response = await fetch(`${configured('SUPABASE_URL')}/rest/v1/profiles?user_id=eq.${encodeURIComponent(user.id)}&select=role`, {
+  const response = await fetch(`${configured('SUPABASE_URL')}/rest/v1/profiles?user_id=eq.${encodeURIComponent(user.id)}&select=role,is_admin`, {
     headers: {
       apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),
       Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`
@@ -138,11 +138,11 @@ async function isAdmin(user) {
   });
   if (!response.ok) return false;
   const rows = await response.json();
-  return rows[0]?.role === 'Admin';
+  return rows[0]?.role === 'Admin' || rows[0]?.is_admin === true;
 }
 
 async function profileRole(userId) {
-  const response = await fetch(`${configured('SUPABASE_URL')}/rest/v1/profiles?user_id=eq.${encodeURIComponent(userId)}&select=role`, {
+  const response = await fetch(`${configured('SUPABASE_URL')}/rest/v1/profiles?user_id=eq.${encodeURIComponent(userId)}&select=role,roles,is_admin`, {
     headers: {
       apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),
       Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`
@@ -150,41 +150,20 @@ async function profileRole(userId) {
   });
   if (!response.ok) return '';
   const rows = await response.json();
-  return rows[0]?.role || '';
+  const p=rows[0]||{};return p.is_admin?'Admin':(Array.isArray(p.roles)&&p.roles[0])||p.role||'';
 }
 
 async function authorizeUpload(user, kind, beatId) {
-  const role = await profileRole(user.id);
-  const admin = role === 'Admin' || (process.env.ADMIN_EMAIL && String(user.email || '').toLowerCase() === String(process.env.ADMIN_EMAIL).toLowerCase());
+  const response=await fetch(`${configured('SUPABASE_URL')}/rest/v1/profiles?user_id=eq.${encodeURIComponent(user.id)}&select=role,roles,is_admin`,{headers:serviceHeaders()});
+  const rows=response.ok?await response.json():[];const profile=rows[0]||{};const roles=Array.isArray(profile.roles)?profile.roles:[profile.role].filter(Boolean);
+  const admin=profile.is_admin===true||profile.role==='Admin'||(process.env.ADMIN_EMAIL&&String(user.email||'').toLowerCase()===String(process.env.ADMIN_EMAIL).toLowerCase());
   const profileAsset = kind === 'cover' && String(beatId || '').startsWith(`profile-${user.id}`);
   if (profileAsset || admin) return true;
-  if (!['Beatmaker', 'Producteur'].includes(role)) {
-    const error = new Error('Seuls les beatmakers, producteurs et administrateurs peuvent envoyer des fichiers de production.');
-    error.status = 403;
-    throw error;
-  }
-  if (!beatId) {
-    const error = new Error('Production associée manquante.');
-    error.status = 400;
-    throw error;
-  }
-  const response = await fetch(`${configured('SUPABASE_URL')}/rest/v1/beats?id=eq.${encodeURIComponent(beatId)}&select=producer_id`, {
-    headers: {
-      apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),
-      Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`
-    }
-  });
-  if (!response.ok) {
-    const error = new Error('Impossible de vérifier la production associée.');
-    error.status = 502;
-    throw error;
-  }
-  const rows = await response.json();
-  if (!rows[0] || String(rows[0].producer_id) !== String(user.id)) {
-    const error = new Error('Tu ne peux envoyer des fichiers que pour tes propres productions.');
-    error.status = 403;
-    throw error;
-  }
+  if (!roles.some(role=>['Beatmaker','Producteur'].includes(role))) { const error=new Error('Seuls les beatmakers, producteurs et administrateurs peuvent envoyer des fichiers de production.');error.status=403;throw error; }
+  if (!beatId) { const error=new Error('Production associée manquante.');error.status=400;throw error; }
+  const beatResponse=await fetch(`${configured('SUPABASE_URL')}/rest/v1/beats?id=eq.${encodeURIComponent(beatId)}&select=producer_id`,{headers:serviceHeaders()});
+  if(!beatResponse.ok){const error=new Error('Impossible de vérifier la production associée.');error.status=502;throw error;}
+  const beats=await beatResponse.json();if(!beats[0]||String(beats[0].producer_id)!==String(user.id)){const error=new Error('Tu ne peux envoyer des fichiers que pour tes propres productions.');error.status=403;throw error;}
   return true;
 }
 
@@ -472,6 +451,34 @@ async function deleteUser(req, res) {
   return sendJson(req, res, 200, { ok: true });
 }
 
+
+const serviceHeaders = () => ({ apikey: configured('SUPABASE_SERVICE_ROLE_KEY'), Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`, 'Content-Type': 'application/json' });
+async function rest(path, options={}) { const response=await fetch(`${configured('SUPABASE_URL')}/rest/v1/${path}`,{...options,headers:{...serviceHeaders(),...(options.headers||{})}}); const text=await response.text(); let data=null; try{data=text?JSON.parse(text):null;}catch{data=text;} if(!response.ok){const e=new Error(typeof data==='object'?(data.message||data.error||JSON.stringify(data)):String(data||'Erreur Supabase'));e.status=response.status;throw e;} return data; }
+async function requireAdmin(req){const user=await verifyUser(req);if(!(await isAdmin(user))){const e=new Error('Administrateur requis.');e.status=403;throw e;}return user;}
+async function getBeatSnapshot(beatId){const rows=await rest(`beats?id=eq.${encodeURIComponent(beatId)}&select=*,licenses(*)`);return rows?.[0]||null;}
+async function trashBeat(req,res){const user=await verifyUser(req);const {beatId}=await readJson(req);if(!beatId)return sendJson(req,res,400,{error:'Production manquante.'});const beat=await getBeatSnapshot(beatId);if(!beat)return sendJson(req,res,404,{error:'Production introuvable.'});if(String(beat.producer_id)!==String(user.id)&&!(await isAdmin(user)))return sendJson(req,res,403,{error:'Action non autorisée.'});const design={...(beat.design||{}),_trashed:true};const trash=await rest('trash_items',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({entity_type:'beat',entity_id:beat.id,owner_id:beat.producer_id,deleted_by:user.id,snapshot:beat,drive_files:beat.files||[]})});await rest(`beats?id=eq.${encodeURIComponent(beat.id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({visibility:'Brouillon',design})});return sendJson(req,res,200,{ok:true,trash:trash?.[0]||null});}
+async function restoreTrash(req,res){await requireAdmin(req);const {trashId}=await readJson(req);const rows=await rest(`trash_items?id=eq.${encodeURIComponent(trashId)}&select=*`);const item=rows?.[0];if(!item)return sendJson(req,res,404,{error:'Élément de corbeille introuvable.'});if(item.entity_type==='beat'){const snap={...(item.snapshot||{})};const licenses=snap.licenses||[];delete snap.licenses;delete snap.created_at;delete snap.updated_at;snap.design={...(snap.design||{})};delete snap.design._trashed;await rest(`beats?id=eq.${encodeURIComponent(item.entity_id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify(snap)});await rest(`licenses?beat_id=eq.${encodeURIComponent(item.entity_id)}`,{method:'DELETE'});if(licenses.length)await rest('licenses',{method:'POST',body:JSON.stringify(licenses.map(({id,...l})=>({...l,beat_id:item.entity_id})))});}await rest(`trash_items?id=eq.${encodeURIComponent(trashId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({restored_at:new Date().toISOString()})});return sendJson(req,res,200,{ok:true});}
+async function driveAbout(){const token=await googleAccessToken();const response=await fetch('https://www.googleapis.com/drive/v3/about?fields=user,storageQuota',{headers:{Authorization:`Bearer ${token}`}});if(!response.ok)throw new Error(`Drive health ${response.status}`);return response.json();}
+async function systemHealth(req,res){await requireAdmin(req);const started=Date.now();let supabase={ok:false},drive={ok:false};try{await rest('profiles?select=user_id&limit=1');supabase={ok:true};}catch(e){supabase={ok:false,error:e.message};}try{const about=await driveAbout();drive={ok:true,...about};}catch(e){drive={ok:false,error:e.message};}const result={ok:supabase.ok&&drive.ok,version:VERSION,supabase,drive,response_time_ms:Date.now()-started,checked_at:new Date().toISOString()};try{await rest('system_health_checks',{method:'POST',body:JSON.stringify([{service:'Supabase',status:supabase.ok?'healthy':'error',response_time_ms:result.response_time_ms,details:supabase},{service:'Google Drive',status:drive.ok?'healthy':'error',response_time_ms:result.response_time_ms,details:drive}])});}catch{}return sendJson(req,res,200,result);}
+async function exportData(){const tables=['profiles','beats','licenses','reservations','reservation_events','conversations','conversation_members','messages','notifications','announcements','collaboration_projects','reports','moderation_queue','admin_tasks','badges','profile_badges','site_settings','feature_flags'];const out={exported_at:new Date().toISOString(),version:VERSION,tables:{}};for(const table of tables){try{out.tables[table]=await rest(`${table}?select=*&limit=10000`);}catch(e){out.tables[table]={error:e.message};}}return out;}
+function csvEscape(v){const value=typeof v==='object'?JSON.stringify(v):String(v??'');return `"${value.replaceAll('"','""')}"`;}
+async function adminExport(req,res,url){await requireAdmin(req);const format=url.searchParams.get('format')==='csv'?'csv':'json';const data=await exportData();if(format==='json')return sendJson(req,res,200,{filename:`danatrap-rsx-export-${Date.now()}.json`,mimeType:'application/json',content:JSON.stringify(data,null,2)});const lines=['table,id,name,status,created_at'];for(const [table,rows] of Object.entries(data.tables)){if(!Array.isArray(rows))continue;for(const row of rows)lines.push([table,row.id||row.user_id||row.key||'',row.name||row.title||row.email||'',row.status||row.visibility||'',row.created_at||row.updated_at||''].map(csvEscape).join(','));}return sendJson(req,res,200,{filename:`danatrap-rsx-export-${Date.now()}.csv`,mimeType:'text/csv',content:lines.join('\n')});}
+async function uploadBackupToDrive(payload){const token=await googleAccessToken();const boundary=`drsx_${crypto.randomBytes(10).toString('hex')}`;const name=`DanaTrap-RSX-backup-${new Date().toISOString().replaceAll(':','-')}.json`;const meta={name,parents:[folderFor('private')],mimeType:'application/json',appProperties:{danatrap:'true',kind:'backup',version:VERSION}};const body=Buffer.concat([Buffer.from(`--${boundary}
+Content-Type: application/json; charset=UTF-8
+
+${JSON.stringify(meta)}
+--${boundary}
+Content-Type: application/json
+
+`),Buffer.from(JSON.stringify(payload,null,2)),Buffer.from(`
+--${boundary}--`)]);const response=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,size,createdTime',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':`multipart/related; boundary=${boundary}`},body});if(!response.ok)throw new Error(`Sauvegarde Drive refusée (${response.status})`);return response.json();}
+async function adminBackup(req,res){const admin=await requireAdmin(req);const run=await rest('backup_runs',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({started_by:admin.id,status:'running',scope:'full',started_at:new Date().toISOString()})});const id=run?.[0]?.id;try{const data=await exportData();const file=await uploadBackupToDrive(data);if(id)await rest(`backup_runs?id=eq.${encodeURIComponent(id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'completed',manifest:{drive_file:file,counts:Object.fromEntries(Object.entries(data.tables).map(([k,v])=>[k,Array.isArray(v)?v.length:0]))},completed_at:new Date().toISOString()})});return sendJson(req,res,200,{ok:true,file,backupId:id});}catch(e){if(id)await rest(`backup_runs?id=eq.${encodeURIComponent(id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'failed',error_message:e.message,completed_at:new Date().toISOString()})});throw e;}}
+
+async function requestVerification(req,res){const user=await verifyUser(req);const {message=''}=await readJson(req);const rows=await rest('moderation_queue',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({source_type:'verification_request',source_id:user.id,reason:'Demande de certification',severity:'low',status:'pending',payload:{message,profile_id:user.id}})});return sendJson(req,res,200,{ok:true,request:rows?.[0]||null});}
+async function verifyProfileAdmin(req,res){const admin=await requireAdmin(req);const {userId,moderationId}=await readJson(req);if(!userId)return sendJson(req,res,400,{error:'Profil manquant.'});await rest(`profiles?user_id=eq.${encodeURIComponent(userId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({verified:true})});const badges=await rest('badges?slug=eq.verified&select=id');if(badges?.[0])await rest('profile_badges',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:userId,badge_id:badges[0].id,assigned_by:admin.id})});if(moderationId)await rest(`moderation_queue?id=eq.${encodeURIComponent(moderationId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'approved',reviewed_by:admin.id,reviewed_at:new Date().toISOString()})});return sendJson(req,res,200,{ok:true});}
+async function setUserRoles(req,res){await requireAdmin(req);const {userId,roles,isAdmin:adminFlag}=await readJson(req);const allowed=['Beatmaker','Artiste','Producteur','Ingénieur du son','Manager'];const clean=[...new Set((Array.isArray(roles)?roles:[]).filter(x=>allowed.includes(x)))];if(!userId||!clean.length)return sendJson(req,res,400,{error:'Utilisateur et rôle requis.'});await rest(`profiles?user_id=eq.${encodeURIComponent(userId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({roles:clean,is_admin:Boolean(adminFlag),role:adminFlag?'Admin':clean[0]})});return sendJson(req,res,200,{ok:true});}
+async function resolveErrorAdmin(req,res){const admin=await requireAdmin(req);const {errorId}=await readJson(req);if(!errorId)return sendJson(req,res,400,{error:'Erreur manquante.'});await rest(`error_logs?id=eq.${encodeURIComponent(errorId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({resolved:true,resolved_at:new Date().toISOString(),resolved_by:admin.id})});return sendJson(req,res,200,{ok:true});}
+
 const server = http.createServer(async (req, res) => {
   applyHeaders(req, res);
   if (req.method === 'OPTIONS') {
@@ -515,6 +522,18 @@ const server = http.createServer(async (req, res) => {
       if (!rateAllowed(req, 'admin', 30)) return sendJson(req, res, 429, { error: 'Trop de requêtes administrateur.' });
       return await deleteUser(req, res);
     }
+    if (req.method === 'POST' && url.pathname === '/beats/trash') {
+      if (!rateAllowed(req, 'trash', 30)) return sendJson(req,res,429,{error:'Trop de suppressions.'});
+      return await trashBeat(req,res);
+    }
+    if (req.method === 'POST' && url.pathname === '/admin/trash/restore') return await restoreTrash(req,res);
+    if (req.method === 'GET' && url.pathname === '/admin/system-health') return await systemHealth(req,res);
+    if (req.method === 'GET' && url.pathname === '/admin/export') return await adminExport(req,res,url);
+    if (req.method === 'POST' && url.pathname === '/admin/backup') return await adminBackup(req,res);
+    if (req.method === 'POST' && url.pathname === '/verification-request') return await requestVerification(req,res);
+    if (req.method === 'POST' && url.pathname === '/admin/verify-profile') return await verifyProfileAdmin(req,res);
+    if (req.method === 'POST' && url.pathname === '/admin/set-roles') return await setUserRoles(req,res);
+    if (req.method === 'POST' && url.pathname === '/admin/error/resolve') return await resolveErrorAdmin(req,res);
     return sendJson(req, res, 404, { error: 'Route inconnue.' });
   } catch (error) {
     console.error('[DanaTrap RSX API]', error);
