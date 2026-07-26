@@ -1,0 +1,709 @@
+[
+  {
+    "family": "Absa",
+    "file": "Absa/AbsaBlackletterDemo-Regular.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Anarchaos",
+    "file": "Anarchaos/Anarchaos.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "ArexaDemo",
+    "file": "ArexaDemo/ArexaDemo-Regular.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Ashborn",
+    "file": "Ashborn/Ashborn.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Bangela",
+    "file": "Bangela/Bangela.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Banxors",
+    "file": "Banxors/Banxors.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Belligoes",
+    "file": "Belligoes/Belligoes-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Berosong",
+    "file": "Berosong/Berosong-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Bestie Seventy",
+    "file": "Bestie Seventy/Bestie Seventy.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Police",
+    "file": "Police/BlackTakora-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "BlimeDemo",
+    "file": "BlimeDemo/BlimeDemo-Regular.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Brandal Legend Demo",
+    "file": "Brandal Legend Demo/Brandal Legend Demo.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Brandal Legend",
+    "file": "Brandal Legend/Brandal Legend Italic Demo.ttf",
+    "weight": 400,
+    "style": "italic",
+    "format": "ttf"
+  },
+  {
+    "family": "Brickscrawl Personal Use",
+    "file": "Brickscrawl Personal Use/Brickscrawl Personal Use.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Brigends Expanded",
+    "file": "Brigends Expanded/Brigends Expanded.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "BrokenHorizon",
+    "file": "BrokenHorizon/BrokenHorizon.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Crimes Times Six",
+    "file": "Crimes Times Six/Crimes Times Six.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Crustaceans-SignatureDEMO",
+    "file": "Crustaceans-SignatureDEMO/Crustaceans-SignatureDEMO-Regular.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Curseyt",
+    "file": "Curseyt/Curseyt.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Curseyt",
+    "file": "Curseyt/Curseyt.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Darkhorn",
+    "file": "Darkhorn/Darkhorn.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "DeathSubway-Drip",
+    "file": "DeathSubway-Drip/DeathSubway-Drip.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "DeathSubway",
+    "file": "DeathSubway/DeathSubway-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Dezzy",
+    "file": "Dezzy/Dezzy.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Dracutaz",
+    "file": "Dracutaz/Dracutaz.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Dracutaz",
+    "file": "Dracutaz/Dracutaz.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "DreamKudos-Personal-Use-Only",
+    "file": "DreamKudos-Personal-Use-Only/DreamKudos-Personal-Use-Only.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Electroharmonix",
+    "file": "Electroharmonix/Electroharmonix.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Fighter Attack",
+    "file": "Fighter Attack/Fighter Attack.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Flashstrike",
+    "file": "Flashstrike/Flashstrike.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Food",
+    "file": "Food/Food Think.ttf",
+    "weight": 100,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "GankerStorm",
+    "file": "GankerStorm/GankerStorm-Regular.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "GankerStorm",
+    "file": "GankerStorm/GankerStorm-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Ghelisyahfreeversion",
+    "file": "Ghelisyahfreeversion/Ghelisyahfreeversion-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Ghost Terror",
+    "file": "Ghost Terror/Ghost Terror.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "ghosthey",
+    "file": "ghosthey/ghosthey-Italic.ttf",
+    "weight": 400,
+    "style": "italic",
+    "format": "ttf"
+  },
+  {
+    "family": "ghosthey",
+    "file": "ghosthey/ghosthey-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Gondens DEMO",
+    "file": "Gondens DEMO/Gondens DEMO.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "GraenMetal",
+    "file": "GraenMetal/GraenMetal-Regular.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Grandover",
+    "file": "Grandover/Grandover.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Headstone DEMO",
+    "file": "Headstone DEMO/Headstone DEMO.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Headstone",
+    "file": "Headstone/Headstone Italic DEMO.ttf",
+    "weight": 400,
+    "style": "italic",
+    "format": "ttf"
+  },
+  {
+    "family": "Hellshunx",
+    "file": "Hellshunx/Hellshunx.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Hellshunx",
+    "file": "Hellshunx/Hellshunx.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Higher Jump",
+    "file": "Higher Jump/Higher Jump.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "HoldMoney",
+    "file": "HoldMoney/HoldMoney-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Kaijuz",
+    "file": "Kaijuz/Kaijuz.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Kaijuz",
+    "file": "Kaijuz/Kaijuz.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Kerod Twenty Five",
+    "file": "Kerod Twenty Five/Kerod Twenty Five.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "LuckiestGuy",
+    "file": "LuckiestGuy/LuckiestGuy.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Matter Guts Demo",
+    "file": "Matter Guts Demo/Matter Guts Demo.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Maytorm",
+    "file": "Maytorm/Maytorm-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Midnight Legacy",
+    "file": "Midnight Legacy/Midnight Legacy.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Might",
+    "file": "Might/Might.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Milker",
+    "file": "Milker/Milker.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Morvanh",
+    "file": "Morvanh/Morvanh-Italic.otf",
+    "weight": 400,
+    "style": "italic",
+    "format": "otf"
+  },
+  {
+    "family": "Morvanh",
+    "file": "Morvanh/Morvanh-Regular.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "NoxaGothicDemoVersion",
+    "file": "NoxaGothicDemoVersion/NoxaGothicDemoVersion-Regular.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Noxis - Personal Use",
+    "file": "Noxis - Personal Use/Noxis - Personal Use.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Peachy Rebels",
+    "file": "Peachy Rebels/Peachy Rebels.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Peachy Rebels",
+    "file": "Peachy Rebels/Peachy Rebels.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Riseria",
+    "file": "Riseria/Riseria-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Robus Demo",
+    "file": "Robus Demo/Robus Demo.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "RockHustle",
+    "file": "RockHustle/RockHustle.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Rockybilly",
+    "file": "Rockybilly/Rockybilly.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Roomach",
+    "file": "Roomach/Roomach-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "ROOSTER PERSONAL USE",
+    "file": "ROOSTER PERSONAL USE/ROOSTER PERSONAL USE.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Ruigslay",
+    "file": "Ruigslay/Ruigslay.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Ruigslay",
+    "file": "Ruigslay/Ruigslay.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "SacraSpina",
+    "file": "SacraSpina/SacraSpina-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Sanguine Frost",
+    "file": "Sanguine Frost/Sanguine Frost.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Saphifen",
+    "file": "Saphifen/Saphifen.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Saphifen",
+    "file": "Saphifen/Saphifen.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Scarbes",
+    "file": "Scarbes/Scarbes.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Scarbes",
+    "file": "Scarbes/Scarbes.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Secret Solver",
+    "file": "Secret Solver/Secret Solver.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Secret Solver",
+    "file": "Secret Solver/Secret Solver.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "SedgwickAveDisplay",
+    "file": "SedgwickAveDisplay/SedgwickAveDisplay-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Shockwave",
+    "file": "Shockwave/Shockwave.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Shockwave",
+    "file": "Shockwave/Shockwave.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Shockwave",
+    "file": "Shockwave/Shockwave.woff",
+    "weight": 400,
+    "style": "normal",
+    "format": "woff"
+  },
+  {
+    "family": "Shooting Star",
+    "file": "Shooting Star/Shooting Star.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Simbiot",
+    "file": "Simbiot/Simbiot.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Snake",
+    "file": "Snake/Snake.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Sounder",
+    "file": "Sounder/Sounder.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Storm Gust",
+    "file": "Storm Gust/Storm Gust.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Sugar Groovy",
+    "file": "Sugar Groovy/Sugar Groovy.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Takashi Japan Demo",
+    "file": "Takashi Japan Demo/Takashi Japan Demo.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Takashi Japan",
+    "file": "Takashi Japan/Takashi Japan Italic Demo.ttf",
+    "weight": 400,
+    "style": "italic",
+    "format": "ttf"
+  },
+  {
+    "family": "Talina DEMO",
+    "file": "Talina DEMO/Talina DEMO.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "THEMEZIRANE",
+    "file": "THEMEZIRANE/THEMEZIRANE-Regular.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "THEMEZIRANE",
+    "file": "THEMEZIRANE/THEMEZIRANE-Regular.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "The Richland",
+    "file": "The Richland/The Richland.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Tsuchigumo",
+    "file": "Tsuchigumo/Tsuchigumo.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Tsuchigumo",
+    "file": "Tsuchigumo/Tsuchigumo.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Urban Thunder Demo",
+    "file": "Urban Thunder Demo/Urban Thunder Demo.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Valty DEMO",
+    "file": "Valty DEMO/Valty DEMO.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Vandalism",
+    "file": "Vandalism/Vandalism.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Vandalism",
+    "file": "Vandalism/Vandalism.ttf",
+    "weight": 400,
+    "style": "normal",
+    "format": "ttf"
+  },
+  {
+    "family": "Wow Dhony",
+    "file": "Wow Dhony/Wow Dhony.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  },
+  {
+    "family": "Zeus Borne",
+    "file": "Zeus Borne/Zeus Borne.otf",
+    "weight": 400,
+    "style": "normal",
+    "format": "otf"
+  }
+]

@@ -29,3 +29,6 @@ identifiants-prives*.txt
 
 # Sauvegardes locales DanaTrap RSX
 .drsx-backups/
+
+# Sources de polices locales (les versions web générées restent suivies)
+Font/

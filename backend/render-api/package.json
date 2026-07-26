@@ -1,6 +1,6 @@
 {
   "name": "danatrap-rsx-render-api",
-  "version": "5.0.0-phase3",
+  "version": "5.0.0-phase4",
   "private": true,
   "type": "module",
   "description": "API sécurisée Render pour DanaTrap RSX : Google Drive, médias signés et administration Supabase.",
