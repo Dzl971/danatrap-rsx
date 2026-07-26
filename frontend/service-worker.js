@@ -1,6 +1,6 @@
-const CACHE='drsx-v5-phase6';
-const IMAGE_CACHE='drsx-images-v5-phase6';
-const FONT_CACHE='drsx-fonts-v5-phase6';
+const CACHE='drsx-v5-phase6-1';
+const IMAGE_CACHE='drsx-images-v5-phase6-1';
+const FONT_CACHE='drsx-fonts-v5-phase6-1';
 const STATIC=['./','./index.html','./assets/styles.css','./assets/data-service.js','./assets/app.js','./assets/fonts/fonts.css','./assets/fonts/fonts.js','./manifest.webmanifest','./icon.svg','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(STATIC)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>![CACHE,IMAGE_CACHE,FONT_CACHE].includes(key)).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
