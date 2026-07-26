@@ -3,7 +3,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = '5.0.0-phase4.1';
+const VERSION = '5.0.0-phase5';
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
@@ -433,6 +433,27 @@ async function createUser(req, res) {
   return sendJson(req, res, 200, { user: data });
 }
 
+
+async function resetUserPassword(req, res) {
+  const admin = await verifyUser(req);
+  if (!(await isAdmin(admin))) return sendJson(req, res, 403, { error: 'Administrateur requis.' });
+  const { email, userId, password, requestId } = await readJson(req);
+  if (!password || String(password).length < 8) return sendJson(req, res, 400, { error: 'Le mot de passe temporaire doit contenir au moins 8 caractères.' });
+  let targetId = userId || '';
+  if (!targetId && email) {
+    const response = await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/users?per_page=1000&page=1`, { headers: { apikey: configured('SUPABASE_SERVICE_ROLE_KEY'), Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}` } });
+    const data = await response.json().catch(() => ({}));
+    targetId = (data.users || []).find(u => String(u.email || '').toLowerCase() === String(email).toLowerCase())?.id || '';
+  }
+  if (!targetId) return sendJson(req, res, 404, { error: 'Utilisateur introuvable.' });
+  const response = await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/users/${encodeURIComponent(targetId)}`, { method: 'PUT', headers: { apikey: configured('SUPABASE_SERVICE_ROLE_KEY'), Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return sendJson(req, res, response.status, { error: data.msg || data.message || 'Réinitialisation impossible.' });
+  await fetch(`${configured('SUPABASE_URL')}/rest/v1/profiles?user_id=eq.${encodeURIComponent(targetId)}`, { method: 'PATCH', headers: { apikey: configured('SUPABASE_SERVICE_ROLE_KEY'), Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' }, body: JSON.stringify({ password_change_required: true, updated_at: new Date().toISOString() }) });
+  if (requestId) await fetch(`${configured('SUPABASE_URL')}/rest/v1/account_recovery_requests?id=eq.${encodeURIComponent(requestId)}`, { method: 'PATCH', headers: { apikey: configured('SUPABASE_SERVICE_ROLE_KEY'), Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' }, body: JSON.stringify({ status: 'completed', handled_by: admin.id, handled_at: new Date().toISOString() }) });
+  return sendJson(req, res, 200, { ok: true, userId: targetId });
+}
+
 async function deleteUser(req, res) {
   const admin = await verifyUser(req);
   if (!(await isAdmin(admin))) return sendJson(req, res, 403, { error: 'Administrateur requis.' });
@@ -485,6 +506,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/admin/create-user') {
       if (!rateAllowed(req, 'admin', 30)) return sendJson(req, res, 429, { error: 'Trop de requêtes administrateur.' });
       return await createUser(req, res);
+    }
+    if (req.method === 'POST' && url.pathname === '/admin/reset-password') {
+      if (!rateAllowed(req, 'admin', 30)) return sendJson(req, res, 429, { error: 'Trop de requêtes administrateur.' });
+      return await resetUserPassword(req, res);
     }
     if (req.method === 'POST' && url.pathname === '/admin/delete-user') {
       if (!rateAllowed(req, 'admin', 30)) return sendJson(req, res, 429, { error: 'Trop de requêtes administrateur.' });
