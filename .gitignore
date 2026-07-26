@@ -32,3 +32,7 @@ identifiants-prives*.txt
 
 # Sources de polices locales (les versions web générées restent suivies)
 Font/
+
+# Cache Python local
+__pycache__/
+*.py[cod]
