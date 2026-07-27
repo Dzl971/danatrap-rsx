@@ -1,8 +1,10 @@
-const CACHE='drsx-v5-phase8';
-const IMAGE_CACHE='drsx-images-v5-phase8';
-const FONT_CACHE='drsx-fonts-v5-phase8';
+const CACHE='drsx-v5-phase9';
+const IMAGE_CACHE='drsx-images-v5-phase9';
+const FONT_CACHE='drsx-fonts-v5-phase9';
 const STATIC=['./','./index.html','./assets/styles.css','./assets/data-service.js','./assets/app.js','./assets/fonts/fonts.css','./assets/fonts/fonts.js','./manifest.webmanifest','./icon.svg','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(STATIC)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>![CACHE,IMAGE_CACHE,FONT_CACHE].includes(key)).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
 async function stale(request,cacheName){const cache=await caches.open(cacheName),cached=await cache.match(request);const network=fetch(request).then(response=>{if(response.ok||response.type==='opaque')cache.put(request,response.clone());return response;}).catch(()=>cached);return cached||network;}
 self.addEventListener('fetch',event=>{const request=event.request;if(request.method!=='GET')return;const url=new URL(request.url);if(request.destination==='image'){event.respondWith(stale(request,IMAGE_CACHE));return;}if(request.destination==='font'||url.pathname.includes('/assets/fonts/')){event.respondWith(stale(request,FONT_CACHE));return;}if(url.origin!==self.location.origin)return;if(url.pathname.endsWith('/config.js')){event.respondWith(fetch(request,{cache:'no-store'}).catch(()=>caches.match(request)));return;}const fresh=request.mode==='navigate'||/\/(index\.html|assets\/(app\.js|data-service\.js|styles\.css|fonts\/fonts\.(css|js)))$/.test(url.pathname);if(fresh){event.respondWith(fetch(request,{cache:'no-store'}).then(response=>{if(response.ok){const copy=response.clone();caches.open(CACHE).then(cache=>cache.put(request,copy));}return response;}).catch(()=>caches.match(request).then(cached=>cached||(request.mode==='navigate'?caches.match('./index.html'):undefined))));return;}event.respondWith(caches.match(request).then(cached=>cached||fetch(request).then(response=>{if(response.ok){const copy=response.clone();caches.open(CACHE).then(cache=>cache.put(request,copy));}return response;})));});
+
+self.addEventListener('notificationclick',event=>{event.notification.close();const target=event.notification.data?.url||'#/app/notifications';event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(list=>{for(const client of list){if('focus'in client){client.postMessage({type:'DRSX_NOTIFICATION_NAVIGATE',url:target});return client.focus();}}return clients.openWindow(`./${target}`);}));});

@@ -3,7 +3,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = '5.0.0-phase8';
+const VERSION = '5.0.0-phase9';
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
@@ -509,6 +509,29 @@ async function deleteUser(req, res) {
 
 const serviceHeaders = () => ({ apikey: configured('SUPABASE_SERVICE_ROLE_KEY'), Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`, 'Content-Type': 'application/json' });
 async function rest(path, options={}) { const response=await fetch(`${configured('SUPABASE_URL')}/rest/v1/${path}`,{...options,headers:{...serviceHeaders(),...(options.headers||{})}}); const text=await response.text(); let data=null; try{data=text?JSON.parse(text):null;}catch{data=text;} if(!response.ok){const e=new Error(typeof data==='object'?(data.message||data.error||JSON.stringify(data)):String(data||'Erreur Supabase'));e.status=response.status;throw e;} return data; }
+
+const LEGAL_DEFAULTS=[
+ {document_type:'terms',version:'1.0',title:'Conditions d’utilisation',content:'DanaTrap RSX est une plateforme de mise en relation musicale. Chaque membre reste responsable des contenus, fichiers, droits, licences et accords qu’il publie.',active:true},
+ {document_type:'privacy',version:'1.0',title:'Politique de confidentialité',content:'Les données sont utilisées pour fournir les comptes, réservations, conversations, recommandations et fichiers. Elles ne sont pas vendues à des annonceurs.',active:true},
+ {document_type:'community',version:'1.0',title:'Règles de la communauté',content:'Le respect des membres, des droits d’auteur et de la loi est obligatoire. Le spam, le harcèlement, les contenus frauduleux et les fichiers illégaux sont interdits.',active:true},
+ {document_type:'storage',version:'1.0',title:'Stockage des fichiers',content:'Les fichiers importés sont stockés sur Google Drive. Ils peuvent être archivés, restaurés ou supprimés selon les règles de la plateforme.',active:true},
+ {document_type:'license',version:'1.0',title:'Licences et accords',content:'Une réservation ouvre une discussion. Les conditions définitives sont celles acceptées entre les participants et consignées dans leur conversation.',active:true}
+];
+async function ensureLegalDocuments(){
+ try{const existing=await rest('legal_documents?select=document_type,version&active=eq.true');const known=new Set((existing||[]).map(x=>`${x.document_type}:${x.version}`));const missing=LEGAL_DEFAULTS.filter(x=>!known.has(`${x.document_type}:${x.version}`));if(missing.length)await rest('legal_documents',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(missing)});}catch(error){console.warn('[DanaTrap legal seed]',error.message);}
+}
+async function accountExport(req,res){
+ const user=await verifyUser(req),uid=encodeURIComponent(user.id);const tables={};
+ const queries={profile:`profiles?user_id=eq.${uid}&select=*`,beats:`beats?producer_id=eq.${uid}&select=*`,reservations:`reservations?or=(artist_id.eq.${uid},beatmaker_id.eq.${uid})&select=*`,conversations:`conversation_members?user_id=eq.${uid}&select=conversation_id,joined_at`,messages:`messages?sender_id=eq.${uid}&select=*`,notifications:`notifications?user_id=eq.${uid}&select=*`,follows:`follows?or=(follower_id.eq.${uid},followed_id.eq.${uid})&select=*`,consents:`user_consents?user_id=eq.${uid}&select=*`};
+ for(const [key,path] of Object.entries(queries)){try{tables[key]=await rest(path);}catch(error){tables[key]={error:error.message};}}
+ return sendJson(req,res,200,{filename:`danatrap-rsx-mes-donnees-${Date.now()}.json`,mimeType:'application/json',content:JSON.stringify({exported_at:new Date().toISOString(),version:VERSION,user:{id:user.id,email:user.email},tables},null,2)});
+}
+async function requestAccountDeletion(req,res){
+ const user=await verifyUser(req),{reason=''}=await readJson(req);const profiles=await rest(`profiles?user_id=eq.${encodeURIComponent(user.id)}&select=name`),name=profiles?.[0]?.name||user.email||user.id;
+ await rest('admin_tasks',{method:'POST',headers:{Prefer:'return=minimal'},body:JSON.stringify({type:'account_deletion',title:`Demande de fermeture — ${name}`,description:String(reason||'Aucun motif fourni').slice(0,2000),priority:'high',status:'open',related_type:'profile',related_id:user.id})});
+ await rest('notifications',{method:'POST',headers:{Prefer:'return=minimal'},body:JSON.stringify({user_id:user.id,type:'account',title:'Demande de fermeture reçue',body:'Dzl 971 examinera ta demande avant tout archivage ou suppression.',link:'#/app/parametres/donnees',payload:{requested_at:new Date().toISOString()}})});
+ return sendJson(req,res,200,{ok:true});
+}
 async function requireAdmin(req){const user=await verifyUser(req);if(!(await isAdmin(user))){const e=new Error('Administrateur requis.');e.status=403;throw e;}return user;}
 async function getBeatSnapshot(beatId){const rows=await rest(`beats?id=eq.${encodeURIComponent(beatId)}&select=*,licenses(*)`);return rows?.[0]||null;}
 async function trashBeat(req,res){const user=await verifyUser(req);const {beatId}=await readJson(req);if(!beatId)return sendJson(req,res,400,{error:'Production manquante.'});const beat=await getBeatSnapshot(beatId);if(!beat)return sendJson(req,res,404,{error:'Production introuvable.'});if(String(beat.producer_id)!==String(user.id)&&!(await isAdmin(user)))return sendJson(req,res,403,{error:'Action non autorisée.'});const design={...(beat.design||{}),_trashed:true};const trash=await rest('trash_items',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({entity_type:'beat',entity_id:beat.id,owner_id:beat.producer_id,deleted_by:user.id,snapshot:beat,drive_files:beat.files||[]})});await rest(`beats?id=eq.${encodeURIComponent(beat.id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({visibility:'Brouillon',design})});return sendJson(req,res,200,{ok:true,trash:trash?.[0]||null});}
@@ -622,9 +645,11 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   try {
-    if (req.method === 'GET' && url.pathname === '/health') {
+    if (req.method === 'GET' && ['/health','/api/v1/health'].includes(url.pathname)) {
       return sendJson(req, res, 200, { ok: true, service: 'DanaTrap RSX Render API', version: VERSION, configured: missingEnv.length === 0, missing: missingEnv });
     }
+    if (req.method === 'GET' && url.pathname === '/api/v1/account/export') return await accountExport(req,res);
+    if (req.method === 'POST' && url.pathname === '/api/v1/account/delete-request') return await requestAccountDeletion(req,res);
     if (req.method === 'POST' && url.pathname === '/upload-session') {
       if (!rateAllowed(req, 'upload-session', 60)) return sendJson(req, res, 429, { error: 'Trop de créations de session d’upload.' });
       return await createUploadSession(req, res);
@@ -689,4 +714,4 @@ const server = http.createServer(async (req, res) => {
 
 server.requestTimeout = 10 * 60 * 1000;
 server.headersTimeout = 65 * 1000;
-server.listen(PORT, '0.0.0.0', () => console.log(`[DanaTrap RSX] API démarrée sur le port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => {console.log(`[DanaTrap RSX] API démarrée sur le port ${PORT}`);setTimeout(()=>ensureLegalDocuments(),1500);});
