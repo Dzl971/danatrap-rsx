@@ -116,6 +116,36 @@ class LocalService{
   async collaborations(user){return clone((this.store.collaborations||[]).filter(c=>isAdminUser(user)||c.member_ids.includes(user.id)));}
   async getCollaboration(user,id){const c=(this.store.collaborations||[]).find(x=>x.id===id);if(!c||!(isAdminUser(user)||c.member_ids.includes(user.id)))return null;return clone(c);}
   async uploadFile(user,file,meta,onProgress){if(CFG.apiBaseUrl||CFG.driveWorkerUrl){return uploadViaWorker(user,file,meta,onProgress,null);}return new Promise(resolve=>{let p=0;const timer=setInterval(()=>{p=Math.min(100,p+12+Math.random()*18);onProgress?.(Math.round(p));if(p>=100){clearInterval(timer);resolve({id:uid('localfile'),name:file.name,size:file.size,mime_type:file.type||'application/octet-stream',kind:meta.kind||'other',stream_url:URL.createObjectURL(file),demo:true});}},100)});}
+
+  async createBeatVersion(user,beatId,label='Sauvegarde automatique'){
+    const beat=this.store.beats.find(x=>x.id===beatId);if(!beat)throw new Error('Production introuvable.');
+    if(!isAdminUser(user)&&beat.producer_id!==user.id)throw new Error('Action non autorisée.');
+    this.store.trashItems=this.store.trashItems||[];
+    const row={id:uid('version'),entity_type:'beat_version',entity_id:beatId,owner_id:beat.producer_id,deleted_by:user.id,snapshot:{beat:clone(beat),licenses:clone(beat.licenses||[]),label},drive_files:clone(beat.files||[]),restore_until:new Date(Date.now()+365*86400000).toISOString(),created_at:now()};
+    this.store.trashItems.unshift(row);this.persist();return clone(row);
+  }
+  async listBeatVersions(user,beatId){
+    const beat=this.store.beats.find(x=>x.id===beatId);if(!beat||(!isAdminUser(user)&&beat.producer_id!==user.id))return [];
+    return clone((this.store.trashItems||[]).filter(x=>x.entity_type==='beat_version'&&x.entity_id===beatId).sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at))));
+  }
+  async restoreBeatVersion(user,versionId){
+    const version=(this.store.trashItems||[]).find(x=>x.id===versionId&&x.entity_type==='beat_version');if(!version)throw new Error('Version introuvable.');
+    const beat=version.snapshot?.beat;if(!beat)throw new Error('Sauvegarde invalide.');
+    if(!isAdminUser(user)&&beat.producer_id!==user.id)throw new Error('Action non autorisée.');
+    const i=this.store.beats.findIndex(x=>x.id===beat.id);if(i>=0)this.store.beats[i]=clone({...beat,licenses:version.snapshot?.licenses||beat.licenses||[]});else this.store.beats.push(clone(beat));
+    this.persist();return clone(this.store.beats.find(x=>x.id===beat.id));
+  }
+  async searchMessages(user,query){
+    const term=String(query||'').trim().toLowerCase();if(term.length<2)return [];
+    const allowed=new Set(this.store.conversations.filter(c=>isAdminUser(user)||c.members.includes(user.id)).map(c=>c.id));
+    return clone(this.store.messages.filter(m=>allowed.has(m.conversation_id)&&`${m.text||''} ${JSON.stringify(m.payload||{})}`.toLowerCase().includes(term)).sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at))).slice(0,80).map(m=>({...m,conversation:this.store.conversations.find(c=>c.id===m.conversation_id)||null})));
+  }
+  async downloadAgreement(user,reservationId){
+    const r=this.store.reservations.find(x=>x.id===reservationId);if(!r)throw new Error('Réservation introuvable.');
+    const beat=this.store.beats.find(x=>x.id===r.beat_id)||{};
+    const text=`DanaTrap RSX\nRécapitulatif de réservation\n\nProduction : ${beat.title||'Production'}\nLicence : ${r.license_name}\nStatut : ${r.status}\nArtiste : ${r.artist_id}\nBeatmaker : ${r.beatmaker_id}\nDate : ${r.created_at}\n`;
+    return {filename:`accord-${String(beat.slug||beat.title||'production').replace(/[^a-z0-9-]+/gi,'-')}.txt`,blob:new Blob([text],{type:'text/plain;charset=utf-8'})};
+  }
   async adminSnapshot(){const snap=clone(this.store);snap.recovery_requests=clone(this.store.recoveryRequests||[]);return snap;}
   async adminDeleteUser(id){this.store.users=this.store.users.filter(u=>u.id!==id);this.store.profiles=this.store.profiles.filter(p=>p.user_id!==id);this.store.beats=this.store.beats.filter(b=>b.producer_id!==id);this.persist();}
   async adminSetUserRole(id,role){return this.adminSetUserRoles(id,[role],false);}
@@ -167,16 +197,65 @@ class LocalService{
   async resetDemo(){this.store=seed();this.persist();localStorage.removeItem(this.sessionKey);}
 }
 
+const FILE_RULES={
+  preview:{extensions:['mp3','wav'],label:'préécoute MP3/WAV'},
+  wav:{extensions:['wav'],label:'WAV original'},
+  project:{extensions:['flp','als','zip','rar'],label:'projet FLP/ALS/ZIP/RAR'},
+  stems:{extensions:['zip','rar'],label:'archive de stems ZIP/RAR'},
+  cover:{extensions:['jpg','jpeg','png','webp','gif'],label:'image JPG/PNG/WEBP/GIF'}
+};
+const fileExt=name=>String(name||'').toLowerCase().split('.').pop();
+const bytesAscii=(bytes,start=0,length=4)=>String.fromCharCode(...bytes.slice(start,start+length));
+async function fileHead(file,size=32){return new Uint8Array(await file.slice(0,Math.min(size,file.size)).arrayBuffer());}
+function magicMatches(ext,bytes){
+  if(ext==='mp3')return bytesAscii(bytes,0,3)==='ID3'||(bytes[0]===0xff&&(bytes[1]&0xe0)===0xe0);
+  if(ext==='wav')return bytesAscii(bytes,0,4)==='RIFF'&&bytesAscii(bytes,8,4)==='WAVE';
+  if(ext==='jpg'||ext==='jpeg')return bytes[0]===0xff&&bytes[1]===0xd8&&bytes[2]===0xff;
+  if(ext==='png')return bytes[0]===0x89&&bytesAscii(bytes,1,3)==='PNG';
+  if(ext==='webp')return bytesAscii(bytes,0,4)==='RIFF'&&bytesAscii(bytes,8,4)==='WEBP';
+  if(ext==='gif')return bytesAscii(bytes,0,4)==='GIF8';
+  if(ext==='zip')return bytesAscii(bytes,0,2)==='PK';
+  if(ext==='rar')return bytesAscii(bytes,0,4)==='Rar!';
+  if(ext==='flp')return bytesAscii(bytes,0,4)==='FLhd';
+  if(ext==='als')return (bytes[0]===0x1f&&bytes[1]===0x8b)||bytesAscii(bytes,0,2)==='PK';
+  return true;
+}
+async function validateUploadFile(file,kind='other'){
+  if(!file||!file.size)throw new Error('Le fichier sélectionné est vide.');
+  const rule=FILE_RULES[kind];
+  if(!rule)return true;
+  const ext=fileExt(file.name);
+  if(!rule.extensions.includes(ext))throw new Error(`Format refusé pour ${rule.label}. Extensions autorisées : ${rule.extensions.join(', ').toUpperCase()}.`);
+  const bytes=await fileHead(file,32);
+  if(!magicMatches(ext,bytes))throw new Error(`Le contenu de « ${file.name} » ne correspond pas réellement à son extension. Réexporte le fichier avant de l’envoyer.`);
+  return true;
+}
+async function quickFileFingerprint(file){
+  const chunk=1024*1024;
+  const first=new Uint8Array(await file.slice(0,Math.min(chunk,file.size)).arrayBuffer());
+  const lastStart=Math.max(0,file.size-chunk);
+  const last=new Uint8Array(await file.slice(lastStart,file.size).arrayBuffer());
+  const sizeBytes=new TextEncoder().encode(String(file.size));
+  const merged=new Uint8Array(first.length+last.length+sizeBytes.length);
+  merged.set(first,0);merged.set(last,first.length);merged.set(sizeBytes,first.length+last.length);
+  const digest=await crypto.subtle.digest('SHA-256',merged);
+  return [...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('');
+}
 async function uploadViaWorker(user,file,meta,onProgress,accessToken){
   const worker=String(CFG.apiBaseUrl||CFG.driveWorkerUrl||'').replace(/\/$/,'');if(!worker)throw new Error('API Render non configurée.');
+  const kind=meta.kind||'other';
+  await validateUploadFile(file,kind);
+  const fingerprint=await quickFileFingerprint(file);
+  const head=[...(await fileHead(file,32))].map(x=>x.toString(16).padStart(2,'0')).join('');
   const token=accessToken||user?.access_token||'';const headers={'Content-Type':'application/json'};if(token)headers.Authorization=`Bearer ${token}`;
-  const sessionResp=await fetch(`${worker}/upload-session`,{method:'POST',headers,body:JSON.stringify({name:file.name,size:file.size,mimeType:file.type||'application/octet-stream',kind:meta.kind||'other',beatId:meta.beatId||'',userId:user.id})});
-  if(!sessionResp.ok)throw new Error((await sessionResp.json().catch(()=>({}))).error||'Impossible de démarrer l’upload Drive.');
-  const session=await sessionResp.json();const chunkSize=8*1024*1024;let start=0,last=null;
-  while(start<file.size){const end=Math.min(start+chunkSize,file.size);const chunk=file.slice(start,end);const h={'Content-Type':file.type||'application/octet-stream','Content-Range':`bytes ${start}-${end-1}/${file.size}`,'X-Upload-Session':session.sessionUrl,'X-Upload-Kind':meta.kind||'other'};if(token)h.Authorization=`Bearer ${token}`;const r=await fetch(`${worker}/upload-chunk`,{method:'PUT',headers:h,body:chunk});if(!(r.status===200||r.status===201||r.status===308))throw new Error((await r.json().catch(()=>({}))).error||`Upload interrompu (${r.status}).`);if(r.status!==308)last=await r.json();start=end;onProgress?.(Math.round(start/file.size*100));}
-  return last||{id:'',name:file.name,size:file.size,kind:meta.kind};
+  const sessionResp=await fetch(`${worker}/upload-session`,{method:'POST',headers,body:JSON.stringify({name:file.name,size:file.size,mimeType:file.type||'application/octet-stream',kind,beatId:meta.beatId||'',userId:user.id,fingerprint,head})});
+  const sessionBody=await sessionResp.json().catch(()=>({}));
+  if(!sessionResp.ok)throw new Error(sessionBody.error||'Impossible de démarrer l’upload Drive.');
+  if(sessionBody.duplicate&&sessionBody.file){onProgress?.(100);return {...sessionBody.file,kind,duplicate:true,fingerprint};}
+  const session=sessionBody;const chunkSize=8*1024*1024;let start=0,last=null;
+  while(start<file.size){const end=Math.min(start+chunkSize,file.size);const chunk=file.slice(start,end);const h={'Content-Type':file.type||'application/octet-stream','Content-Range':`bytes ${start}-${end-1}/${file.size}`,'X-Upload-Session':session.sessionUrl,'X-Upload-Kind':kind};if(token)h.Authorization=`Bearer ${token}`;const r=await fetch(`${worker}/upload-chunk`,{method:'PUT',headers:h,body:chunk});if(!(r.status===200||r.status===201||r.status===308))throw new Error((await r.json().catch(()=>({}))).error||`Upload interrompu (${r.status}).`);if(r.status!==308)last=await r.json();start=end;onProgress?.(Math.round(start/file.size*100));}
+  return {...(last||{id:'',name:file.name,size:file.size,kind}),fingerprint};
 }
-
 function mapSupabaseBeat(b){if(!b)return b;return {...b,coverImage:b.cover_image||b.coverImage||'',coverClass:b.cover_class||b.coverClass||'cover-a',producer_name:b.producer_name||b.producerName||'',producer_slug:b.producer_slug||b.producerSlug||'',licenses:b.licenses||[]};}
 function toSupabaseBeat(b){const allowed=['id','slug','producer_id','producer_slug','producer_name','title','bpm','key','genre','mood','description','tags','visibility','plays','likes','duration','audio','files','design'];const out={};for(const k of allowed)if(b[k]!==undefined)out[k]=b[k];if(b.coverImage!==undefined)out.cover_image=b.coverImage;if(b.coverClass!==undefined)out.cover_class=b.coverClass;return out;}
 
@@ -256,6 +335,27 @@ class SupabaseService extends LocalService{
   async savePlaylist(user,name){const {data,error}=await this.sb.from('playlists').insert({user_id:user.id,name}).select().single();if(error)throw error;return data;}
   async collaborations(user){const {data,error}=await this.sb.from('collaboration_members').select('project_id, collaboration_projects(*, collaboration_files(*), collaboration_comments(*), collaboration_credits(*))').eq('user_id',user.id);if(error)throw error;return (data||[]).map(x=>({...x.collaboration_projects,member_ids:[]}));}
   async getCollaboration(user,id){const {data,error}=await this.sb.from('collaboration_projects').select('*, collaboration_members(user_id,profiles(*)), collaboration_files(*), collaboration_comments(*), collaboration_credits(*)').eq('id',id).maybeSingle();if(error)throw error;return data;}
+
+  async createBeatVersion(user,beatId,label='Sauvegarde automatique'){
+    const r=await fetch(`${String(CFG.apiBaseUrl||CFG.driveWorkerUrl||'').replace(/\/$/,'')}/beats/version`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${this.session.access_token}`},body:JSON.stringify({beatId,label})});const body=await r.json().catch(()=>({}));if(!r.ok)throw new Error(body.error||'Sauvegarde de version impossible.');return body.version;
+  }
+  async listBeatVersions(user,beatId){
+    const r=await fetch(`${String(CFG.apiBaseUrl||CFG.driveWorkerUrl||'').replace(/\/$/,'')}/beats/versions?beatId=${encodeURIComponent(beatId)}`,{headers:{Authorization:`Bearer ${this.session.access_token}`}});const body=await r.json().catch(()=>({}));if(!r.ok)throw new Error(body.error||'Historique indisponible.');return body.versions||[];
+  }
+  async restoreBeatVersion(user,versionId){
+    const r=await fetch(`${String(CFG.apiBaseUrl||CFG.driveWorkerUrl||'').replace(/\/$/,'')}/beats/version/restore`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${this.session.access_token}`},body:JSON.stringify({versionId})});const body=await r.json().catch(()=>({}));if(!r.ok)throw new Error(body.error||'Restauration impossible.');return mapSupabaseBeat(body.beat);
+  }
+  async searchMessages(user,query){
+    const term=String(query||'').trim();if(term.length<2)return [];
+    const {data:memberships,error:membershipError}=await this.sb.from('conversation_members').select('conversation_id').eq('user_id',user.id);if(membershipError)throw membershipError;
+    const ids=[...new Set((memberships||[]).map(x=>x.conversation_id).filter(Boolean))];if(!ids.length)return [];
+    const {data,error}=await this.sb.from('messages').select('*, conversations(id,title,beat_id)').in('conversation_id',ids).ilike('text',`%${term}%`).order('created_at',{ascending:false}).limit(80);if(error)throw error;
+    return (data||[]).map(x=>({...x,conversation:x.conversations||null}));
+  }
+  async downloadAgreement(user,reservationId){
+    const r=await fetch(`${String(CFG.apiBaseUrl||CFG.driveWorkerUrl||'').replace(/\/$/,'')}/reservations/agreement?reservationId=${encodeURIComponent(reservationId)}`,{headers:{Authorization:`Bearer ${this.session.access_token}`}});if(!r.ok){const body=await r.json().catch(()=>({}));throw new Error(body.error||'Document indisponible.');}
+    const disposition=r.headers.get('content-disposition')||'';const match=disposition.match(/filename="?([^";]+)"?/i);return {filename:match?.[1]||`accord-reservation-${reservationId}.pdf`,blob:await r.blob()};
+  }
   async uploadFile(user,file,meta,onProgress){return uploadViaWorker(user,file,meta,onProgress,this.session?.access_token);}
   async adminSnapshot(){const api=String(CFG.apiBaseUrl||CFG.driveWorkerUrl||'').replace(/\/$/,'');const authUsers=api?fetch(`${api}/admin/users`,{headers:{Authorization:`Bearer ${this.session.access_token}`}}).then(async r=>{const body=await r.json().catch(()=>({}));if(!r.ok)throw new Error(body.error||'Lecture des utilisateurs impossible.');return body.users||[];}):this.sb.from('admin_users').select('*').then(x=>x.data||[]);const [users,profiles,beats,reservations,notifications,recovery_requests]=await Promise.all([authUsers,this.sb.from('profiles').select('*').then(x=>x.data||[]),this.sb.from('beats').select('*,licenses(*)').then(x=>x.data||[]),this.sb.from('reservations').select('*').then(x=>x.data||[]),this.sb.from('notifications').select('*').then(x=>x.data||[]),this.sb.from('account_recovery_requests').select('*').order('created_at',{ascending:false}).then(x=>x.data||[])]);return {users,profiles,beats:beats.map(mapSupabaseBeat),reservations,notifications,recovery_requests};}
   async adminDeleteUser(id){const r=await fetch(`${String(CFG.apiBaseUrl||CFG.driveWorkerUrl||'').replace(/\/$/,'')}/admin/delete-user`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${this.session.access_token}`},body:JSON.stringify({userId:id})});if(!r.ok)throw new Error('Suppression impossible.');}

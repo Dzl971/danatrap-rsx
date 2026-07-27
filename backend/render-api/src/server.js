@@ -3,7 +3,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = '5.0.0-phase7';
+const VERSION = '5.0.0-phase8';
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
@@ -15,6 +15,7 @@ const requiredEnv = [
 ];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 const rateBuckets = new Map();
+const uploadSessions = new Map();
 
 if (missingEnv.length) {
   console.warn(`[DanaTrap RSX] Variables manquantes : ${missingEnv.join(', ')}. Les routes concernées renverront une erreur de configuration.`);
@@ -277,14 +278,66 @@ async function pipeDriveMedia(req, res, fileId, token, metadata, cacheControl = 
   return Readable.fromWeb(response.body).pipe(res);
 }
 
+
+const SERVER_FILE_RULES={
+  preview:['mp3','wav'],wav:['wav'],project:['flp','als','zip','rar'],stems:['zip','rar'],cover:['jpg','jpeg','png','webp','gif']
+};
+function extensionOf(name=''){return String(name).toLowerCase().split('.').pop();}
+function ascii(buffer,start=0,length=4){return buffer.subarray(start,start+length).toString('latin1');}
+function magicValid(ext,buffer){
+  if(ext==='mp3')return ascii(buffer,0,3)==='ID3'||(buffer[0]===0xff&&(buffer[1]&0xe0)===0xe0);
+  if(ext==='wav')return ascii(buffer,0,4)==='RIFF'&&ascii(buffer,8,4)==='WAVE';
+  if(['jpg','jpeg'].includes(ext))return buffer[0]===0xff&&buffer[1]===0xd8&&buffer[2]===0xff;
+  if(ext==='png')return buffer[0]===0x89&&ascii(buffer,1,3)==='PNG';
+  if(ext==='webp')return ascii(buffer,0,4)==='RIFF'&&ascii(buffer,8,4)==='WEBP';
+  if(ext==='gif')return ascii(buffer,0,4)==='GIF8';
+  if(ext==='zip')return ascii(buffer,0,2)==='PK';
+  if(ext==='rar')return ascii(buffer,0,4)==='Rar!';
+  if(ext==='flp')return ascii(buffer,0,4)==='FLhd';
+  if(ext==='als')return (buffer[0]===0x1f&&buffer[1]===0x8b)||ascii(buffer,0,2)==='PK';
+  return true;
+}
+function validateUploadDeclaration({name,kind,size,fingerprint}){
+  const ext=extensionOf(name),allowed=SERVER_FILE_RULES[kind];
+  if(allowed&&!allowed.includes(ext)){const e=new Error(`Extension .${ext||'?'} refusée pour ${kind}.`);e.status=415;throw e;}
+  if(fingerprint&&!/^[a-f0-9]{64}$/i.test(String(fingerprint))){const e=new Error('Empreinte de fichier invalide.');e.status=400;throw e;}
+  if(Number(size)<=0){const e=new Error('Fichier vide.');e.status=400;throw e;}
+  return ext;
+}
+function mediaUrls(req,file,kind){
+  let stream_url='',signed_stream_url='';
+  if(['preview','cover'].includes(kind)){
+    stream_url=`${publicOrigin(req)}/public-media/${encodeURIComponent(file.id)}`;
+    const ttl=Math.max(3600,Number(process.env.MEDIA_LINK_TTL_SECONDS||31536000)),exp=Math.floor(Date.now()/1000)+ttl;
+    signed_stream_url=`${publicOrigin(req)}/media/${encodeURIComponent(file.id)}?exp=${exp}&sig=${encodeURIComponent(signMedia(file.id,exp))}`;
+  }
+  return {...file,kind,stream_url,signed_stream_url};
+}
+async function findDuplicateDriveFile(token,{userId,fingerprint,kind,size}){
+  if(!fingerprint)return null;
+  const q=`trashed = false and appProperties has { key='danatrap' and value='true' } and appProperties has { key='owner_user_id' and value='${String(userId).replaceAll("'","")}' } and appProperties has { key='fingerprint' and value='${String(fingerprint)}' } and appProperties has { key='kind' and value='${String(kind).replaceAll("'","")}' }`;
+  const url=new URL('https://www.googleapis.com/drive/v3/files');
+  url.searchParams.set('q',q);url.searchParams.set('fields','files(id,name,mimeType,size,appProperties,createdTime)');url.searchParams.set('pageSize','10');
+  const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`}});
+  if(!response.ok)return null;
+  const files=(await response.json()).files||[];
+  return files.find(file=>!size||Number(file.size||0)===Number(size))||null;
+}
+setInterval(()=>{const limit=Date.now()-24*3600_000;for(const [key,value] of uploadSessions){if(value.createdAt<limit)uploadSessions.delete(key);}},3600_000).unref();
+
 async function createUploadSession(req, res) {
   const user = await verifyUser(req);
-  const { name, size, mimeType, kind = 'other', beatId = '' } = await readJson(req);
+  const { name, size, mimeType, kind = 'other', beatId = '', fingerprint = '', head = '' } = await readJson(req);
   if (!name || !Number(size)) return sendJson(req, res, 400, { error: 'Nom ou taille manquante.' });
   if (Number(size) > Number(process.env.MAX_UPLOAD_BYTES || 5 * 1024 * 1024 * 1024)) return sendJson(req, res, 413, { error: 'Le fichier dépasse la limite configurée.' });
+  const ext=validateUploadDeclaration({name,kind,size,fingerprint});
+  if(head&&/^[a-f0-9]+$/i.test(head)){const bytes=Buffer.from(head,'hex');if(!magicValid(ext,bytes))return sendJson(req,res,415,{error:`Le contenu de « ${safeFileName(name)} » ne correspond pas à son extension.`});}
   await authorizeUpload(user, kind, beatId);
 
   const token = await googleAccessToken();
+  const duplicate=await findDuplicateDriveFile(token,{userId:user.id,fingerprint,kind,size});
+  if(duplicate)return sendJson(req,res,200,{duplicate:true,file:mediaUrls(req,duplicate,kind)});
+
   const folder = folderFor(kind);
   const metadata = {
     name: String(name).slice(0, 220),
@@ -294,10 +347,13 @@ async function createUploadSession(req, res) {
       danatrap: 'true',
       owner_user_id: String(user.id),
       beat_id: String(beatId || ''),
-      kind: String(kind || 'other')
+      kind: String(kind || 'other'),
+      fingerprint:String(fingerprint||''),
+      original_size:String(size),
+      extension:ext
     }
   };
-  const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,mimeType,size', {
+  const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,mimeType,size,appProperties', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -308,16 +364,24 @@ async function createUploadSession(req, res) {
     body: JSON.stringify(metadata)
   });
   if (!response.ok) return sendJson(req, res, 502, { error: 'Google Drive a refusé la session.', details: (await response.text()).slice(0, 500) });
-  return sendJson(req, res, 200, { sessionUrl: response.headers.get('Location') });
+  const sessionUrl=response.headers.get('Location');
+  uploadSessions.set(sessionUrl,{userId:user.id,kind,beatId,name,size:Number(size),mimeType,ext,fingerprint,createdAt:Date.now()});
+  return sendJson(req, res, 200, { sessionUrl });
 }
 
 async function uploadChunk(req, res) {
-  await verifyUser(req);
+  const user=await verifyUser(req);
   const sessionUrl = String(req.headers['x-upload-session'] || '');
   if (!sessionUrl.startsWith('https://www.googleapis.com/upload/drive/')) return sendJson(req, res, 400, { error: 'Session Drive invalide.' });
   if (!req.headers['content-range']) return sendJson(req, res, 400, { error: 'Content-Range manquant.' });
 
+  const info=uploadSessions.get(sessionUrl);
+  if(info&&String(info.userId)!==String(user.id))return sendJson(req,res,403,{error:'Cette session d’upload appartient à un autre utilisateur.'});
   const chunk = await readBody(req, 9 * 1024 * 1024);
+  const range=String(req.headers['content-range']||'');
+  const startOffset=Number((range.match(/bytes\s+(\d+)-/)||[])[1]||0);
+  if(info&&startOffset===0&&!magicValid(info.ext,chunk))return sendJson(req,res,415,{error:`Le contenu de « ${safeFileName(info.name)} » est invalide ou corrompu.`});
+
   const token = await googleAccessToken();
   const response = await fetch(sessionUrl, {
     method: 'PUT',
@@ -338,18 +402,9 @@ async function uploadChunk(req, res) {
   if (!response.ok) return sendJson(req, res, response.status, { error: 'Un morceau du fichier a été refusé.', details: (await response.text()).slice(0, 500) });
 
   const file = await response.json();
-  const kind = String(req.headers['x-upload-kind'] || 'other');
-  let stream_url = '';
-  let signed_stream_url = '';
-  if (['preview', 'cover'].includes(kind)) {
-    // URL stable pour les médias publics. Le serveur vérifie toujours dans Drive
-    // que le fichier a bien été créé par DanaTrap et qu'il s'agit d'une preview/couverture.
-    stream_url = `${publicOrigin(req)}/public-media/${encodeURIComponent(file.id)}`;
-    const ttl = Math.max(3600, Number(process.env.MEDIA_LINK_TTL_SECONDS || 31536000));
-    const exp = Math.floor(Date.now() / 1000) + ttl;
-    signed_stream_url = `${publicOrigin(req)}/media/${encodeURIComponent(file.id)}?exp=${exp}&sig=${encodeURIComponent(signMedia(file.id, exp))}`;
-  }
-  return sendJson(req, res, 200, { ...file, kind, stream_url, signed_stream_url });
+  const kind = info?.kind||String(req.headers['x-upload-kind'] || 'other');
+  uploadSessions.delete(sessionUrl);
+  return sendJson(req,res,200,{...mediaUrls(req,file,kind),fingerprint:info?.fingerprint||'',duplicate:false});
 }
 
 async function streamMedia(req, res, fileId, url) {
@@ -479,6 +534,84 @@ async function verifyProfileAdmin(req,res){const admin=await requireAdmin(req);c
 async function setUserRoles(req,res){await requireAdmin(req);const {userId,roles,isAdmin:adminFlag}=await readJson(req);const allowed=['Beatmaker','Artiste','Producteur','Ingénieur du son','Manager'];const clean=[...new Set((Array.isArray(roles)?roles:[]).filter(x=>allowed.includes(x)))];if(!userId||!clean.length)return sendJson(req,res,400,{error:'Utilisateur et rôle requis.'});await rest(`profiles?user_id=eq.${encodeURIComponent(userId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({roles:clean,is_admin:Boolean(adminFlag),role:adminFlag?'Admin':clean[0]})});return sendJson(req,res,200,{ok:true});}
 async function resolveErrorAdmin(req,res){const admin=await requireAdmin(req);const {errorId}=await readJson(req);if(!errorId)return sendJson(req,res,400,{error:'Erreur manquante.'});await rest(`error_logs?id=eq.${encodeURIComponent(errorId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({resolved:true,resolved_at:new Date().toISOString(),resolved_by:admin.id})});return sendJson(req,res,200,{ok:true});}
 
+
+async function requireBeatAccess(req,beatId){
+  const user=await verifyUser(req),beat=await getBeatSnapshot(beatId);
+  if(!beat){const e=new Error('Production introuvable.');e.status=404;throw e;}
+  if(String(beat.producer_id)!==String(user.id)&&!(await isAdmin(user))){const e=new Error('Action non autorisée.');e.status=403;throw e;}
+  return {user,beat};
+}
+async function createBeatVersion(req,res){
+  const {beatId,label='Sauvegarde automatique'}=await readJson(req);if(!beatId)return sendJson(req,res,400,{error:'Production manquante.'});
+  const {user,beat}=await requireBeatAccess(req,beatId);
+  const rows=await rest('trash_items',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({entity_type:'beat_version',entity_id:beat.id,owner_id:beat.producer_id,deleted_by:user.id,snapshot:{beat,licenses:beat.licenses||[],label:String(label).slice(0,200)},drive_files:beat.files||[],restore_until:new Date(Date.now()+365*86400000).toISOString()})});
+  try{await rest('audit_logs',{method:'POST',body:JSON.stringify({actor_id:user.id,action:'beat.version.create',entity_type:'beat',entity_id:beat.id,after_data:{version_id:rows?.[0]?.id,label}})});}catch{}
+  return sendJson(req,res,200,{ok:true,version:rows?.[0]||null});
+}
+async function listBeatVersions(req,res,url){
+  const beatId=url.searchParams.get('beatId');if(!beatId)return sendJson(req,res,400,{error:'Production manquante.'});
+  await requireBeatAccess(req,beatId);
+  const rows=await rest(`trash_items?entity_type=eq.beat_version&entity_id=eq.${encodeURIComponent(beatId)}&select=*&order=created_at.desc&limit=50`);
+  return sendJson(req,res,200,{versions:rows||[]});
+}
+async function restoreBeatVersion(req,res){
+  const {versionId}=await readJson(req);if(!versionId)return sendJson(req,res,400,{error:'Version manquante.'});
+  const rows=await rest(`trash_items?id=eq.${encodeURIComponent(versionId)}&entity_type=eq.beat_version&select=*`),item=rows?.[0];
+  if(!item)return sendJson(req,res,404,{error:'Version introuvable.'});
+  const snap=item.snapshot?.beat||item.snapshot||{},beatId=snap.id||item.entity_id;
+  const {user,beat:current}=await requireBeatAccess(req,beatId);
+  await rest('trash_items',{method:'POST',body:JSON.stringify({entity_type:'beat_version',entity_id:current.id,owner_id:current.producer_id,deleted_by:user.id,snapshot:{beat:current,licenses:current.licenses||[],label:'Avant restauration'},drive_files:current.files||[],restore_until:new Date(Date.now()+365*86400000).toISOString()})});
+  const licenses=item.snapshot?.licenses||snap.licenses||[];const payload={...snap};delete payload.id;delete payload.licenses;delete payload.created_at;delete payload.updated_at;
+  await rest(`beats?id=eq.${encodeURIComponent(beatId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify(payload)});
+  await rest(`licenses?beat_id=eq.${encodeURIComponent(beatId)}`,{method:'DELETE'});
+  if(licenses.length)await rest('licenses',{method:'POST',body:JSON.stringify(licenses.map(({id,created_at,...license},index)=>({...license,beat_id:beatId,sort_order:license.sort_order??index})))});
+  try{await rest('audit_logs',{method:'POST',body:JSON.stringify({actor_id:user.id,action:'beat.version.restore',entity_type:'beat',entity_id:beatId,before_data:current,after_data:snap,metadata:{version_id:versionId}})});}catch{}
+  return sendJson(req,res,200,{ok:true,beat:await getBeatSnapshot(beatId)});
+}
+function pdfEscape(value=''){return String(value).replaceAll('\\','\\\\').replaceAll('(','\\(').replaceAll(')','\\)').replace(/[^\x20-\xFF]/g,'?');}
+function wrapPdfLine(text,max=88){const words=String(text||'').split(/\s+/),lines=[];let line='';for(const word of words){if((line+' '+word).trim().length>max){if(line)lines.push(line);line=word;}else line=(line+' '+word).trim();}if(line)lines.push(line);return lines;}
+function buildSimplePdf(lines){
+  const content=[];let y=800;
+  for(const entry of lines){const size=entry.size||11,bold=entry.bold?'F2':'F1';for(const line of wrapPdfLine(entry.text||'',entry.max||88)){content.push(`BT /${bold} ${size} Tf 50 ${y} Td (${pdfEscape(line)}) Tj ET`);y-=entry.gap||Math.round(size*1.55);if(y<60)y=800;}if(entry.after)y-=entry.after;}
+  const stream=Buffer.from(content.join('\n'),'latin1');
+  const objects=[
+    Buffer.from('<< /Type /Catalog /Pages 2 0 R >>','latin1'),
+    Buffer.from('<< /Type /Pages /Kids [3 0 R] /Count 1 >>','latin1'),
+    Buffer.from('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>','latin1'),
+    Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>','latin1'),
+    Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>','latin1'),
+    Buffer.concat([Buffer.from(`<< /Length ${stream.length} >>\nstream\n`,'latin1'),stream,Buffer.from('\nendstream','latin1')])
+  ];
+  const parts=[Buffer.from('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n','latin1')],offsets=[0];
+  for(let i=0;i<objects.length;i++){offsets.push(Buffer.concat(parts).length);parts.push(Buffer.from(`${i+1} 0 obj\n`,'latin1'),objects[i],Buffer.from('\nendobj\n','latin1'));}
+  const xref=Buffer.concat(parts).length;let table=`xref\n0 ${objects.length+1}\n0000000000 65535 f \n`;for(let i=1;i<offsets.length;i++)table+=`${String(offsets[i]).padStart(10,'0')} 00000 n \n`;
+  parts.push(Buffer.from(table+`trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`,'latin1'));
+  return Buffer.concat(parts);
+}
+async function reservationAgreement(req,res,url){
+  const user=await verifyUser(req),id=url.searchParams.get('reservationId');if(!id)return sendJson(req,res,400,{error:'Réservation manquante.'});
+  const reservations=await rest(`reservations?id=eq.${encodeURIComponent(id)}&select=*`),reservation=reservations?.[0];if(!reservation)return sendJson(req,res,404,{error:'Réservation introuvable.'});
+  if(![reservation.artist_id,reservation.beatmaker_id].map(String).includes(String(user.id))&&!(await isAdmin(user)))return sendJson(req,res,403,{error:'Document inaccessible.'});
+  const [beatRows,artistRows,makerRows,events]=await Promise.all([
+    rest(`beats?id=eq.${encodeURIComponent(reservation.beat_id)}&select=*,licenses(*)`),
+    rest(`profiles?user_id=eq.${encodeURIComponent(reservation.artist_id)}&select=name,username`),
+    rest(`profiles?user_id=eq.${encodeURIComponent(reservation.beatmaker_id)}&select=name,username`),
+    rest(`reservation_events?reservation_id=eq.${encodeURIComponent(id)}&select=*&order=created_at.asc`)
+  ]);
+  const beat=beatRows?.[0]||{},artist=artistRows?.[0]||{},maker=makerRows?.[0]||{},rights=beat.design?.rights||{};
+  const lines=[
+    {text:'DanaTrap RSX',size:22,bold:true,gap:30},{text:'Récapitulatif de réservation et accord',size:16,bold:true,after:12},
+    {text:`Document généré le ${new Date().toLocaleString('fr-FR')}`,size:9,after:12},
+    {text:`Production : ${beat.title||'Production'}`,size:13,bold:true},{text:`Beatmaker : ${maker.name||beat.producer_name||reservation.beatmaker_id}`},{text:`Artiste : ${artist.name||reservation.artist_id}`},{text:`Licence : ${reservation.license_name}`},{text:`Statut : ${reservation.status}`},{text:`Réservation créée le : ${new Date(reservation.created_at).toLocaleString('fr-FR')}`,after:14},
+    {text:'Crédits et droits',size:13,bold:true},{text:`Crédit public : ${rights.creditLine||`Prod. ${beat.producer_name||maker.name||''}`}`},{text:`Compositeur : ${rights.composer||maker.name||''}`},{text:`Auteurs : ${rights.authors||artist.name||''}`},{text:`Éditeur : ${rights.publisher||'Non renseigné'}`},{text:`IPI : ${rights.ipi||'Non renseigné'}`},{text:`Répartition beatmaker : ${rights.splitProducer??'Non renseignée'} %`},{text:`Répartition artiste : ${rights.splitArtist??'Non renseignée'} %`},{text:`Notes : ${rights.notes||'Aucune'}`,after:14},
+    {text:'Historique de la réservation',size:13,bold:true},
+    ...(events||[]).map(event=>({text:`${new Date(event.created_at).toLocaleString('fr-FR')} — ${event.event_type||event.status||'Mise à jour'} ${event.payload?.reason?`: ${event.payload.reason}`:''}`,size:9})),
+    {text:'Ce document récapitule les informations enregistrées sur DanaTrap RSX. Les conditions définitives restent celles acceptées par les participants dans leur conversation.',size:8,after:8}
+  ];
+  const pdf=buildSimplePdf(lines),filename=`DanaTrap-RSX-${String(beat.slug||beat.title||'accord').replace(/[^a-z0-9-]+/gi,'-')}-${id.slice(0,8)}.pdf`;
+  applyHeaders(req,res);res.statusCode=200;res.setHeader('Content-Type','application/pdf');res.setHeader('Content-Length',String(pdf.length));res.setHeader('Content-Disposition',`attachment; filename="${filename}"`);res.setHeader('Cache-Control','private, no-store');return res.end(pdf);
+}
+
 const server = http.createServer(async (req, res) => {
   applyHeaders(req, res);
   if (req.method === 'OPTIONS') {
@@ -522,6 +655,10 @@ const server = http.createServer(async (req, res) => {
       if (!rateAllowed(req, 'admin', 30)) return sendJson(req, res, 429, { error: 'Trop de requêtes administrateur.' });
       return await deleteUser(req, res);
     }
+    if (req.method === 'POST' && url.pathname === '/beats/version') return await createBeatVersion(req,res);
+    if (req.method === 'GET' && url.pathname === '/beats/versions') return await listBeatVersions(req,res,url);
+    if (req.method === 'POST' && url.pathname === '/beats/version/restore') return await restoreBeatVersion(req,res);
+    if (req.method === 'GET' && url.pathname === '/reservations/agreement') return await reservationAgreement(req,res,url);
     if (req.method === 'POST' && url.pathname === '/beats/trash') {
       if (!rateAllowed(req, 'trash', 30)) return sendJson(req,res,429,{error:'Trop de suppressions.'});
       return await trashBeat(req,res);
