@@ -1,4 +1,4 @@
-const CACHE='drsx-v5-phase6-3';
+const CACHE='drsx-v5-phase7';
 const IMAGE_CACHE='drsx-images-v5-phase6-3';
 const FONT_CACHE='drsx-fonts-v5-phase6-3';
 const STATIC=['./','./index.html','./assets/styles.css','./assets/data-service.js','./assets/app.js','./assets/fonts/fonts.css','./assets/fonts/fonts.js','./manifest.webmanifest','./icon.svg','./icon-192.png','./icon-512.png'];
