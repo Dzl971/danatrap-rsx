@@ -412,3 +412,32 @@ body{font-family:var(--site-font),Inter,system-ui,sans-serif;transition:backgrou
 }
 .invoice-signatures img{max-height:66px}
 .invoice-signatures>div{padding-bottom:12px}
+
+/* Phase 11.4 — formulaires et aperçus plus fluides */
+.editor-preview,
+#beat-preview,
+#beat-detail-preview,
+#profile-preview,
+.aspect-preview-window,
+.invoice-preview-shell {
+  contain: layout paint style;
+}
+#beat-preview .beat-card,
+#beat-detail-preview .production-detail-preview {
+  pointer-events: none;
+  user-select: none;
+}
+.editor-form input,
+.editor-form textarea,
+.editor-form select,
+.invoice-editor input,
+.invoice-editor textarea,
+.invoice-editor select {
+  contain: none;
+}
+@media (min-width: 1050px) {
+  .editor-form > .panel {
+    content-visibility: auto;
+    contain-intrinsic-size: 460px;
+  }
+}
