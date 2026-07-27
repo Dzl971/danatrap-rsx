@@ -3,7 +3,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = '5.0.0-phase9';
+const VERSION = '5.0.0-phase10';
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
@@ -16,6 +16,8 @@ const requiredEnv = [
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 const rateBuckets = new Map();
 const uploadSessions = new Map();
+const backgroundState = { running: false, lastRunAt: null, lastResult: null, lastError: '' };
+const authUserCache = new Map();
 
 if (missingEnv.length) {
   console.warn(`[DanaTrap RSX] Variables manquantes : ${missingEnv.join(', ')}. Les routes concernées renverront une erreur de configuration.`);
@@ -208,6 +210,58 @@ function verifyMediaSignature(fileId, expiresAt, signature) {
 function publicOrigin(req) {
   const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0];
   return String(process.env.RENDER_EXTERNAL_URL || `${proto}://${req.headers.host}`).replace(/\/$/, '');
+}
+
+function publicSiteUrl() {
+  return String(process.env.PUBLIC_SITE_URL || 'https://danatrap-rsx-site.onrender.com').replace(/\/$/, '');
+}
+
+function emailConfigured() {
+  return Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM);
+}
+
+function htmlEscape(value = '') {
+  return String(value).replace(/[&<>"']/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
+}
+
+async function sendTransactionalEmail({ to, subject, text = '', html = '' }) {
+  if (!emailConfigured()) return { sent: false, skipped: true, reason: 'EMAIL_NOT_CONFIGURED' };
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: process.env.EMAIL_FROM,
+      to: [to],
+      subject: String(subject || 'DanaTrap RSX').slice(0, 180),
+      text: String(text || '').slice(0, 10000),
+      html: html || `<div style="font-family:Arial,sans-serif;background:#090a0c;color:#f5f5f2;padding:28px;border-radius:18px"><h2 style="color:#f6c90e">DanaTrap RSX</h2><p>${htmlEscape(text)}</p></div>`
+    })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(body?.message || `E-mail refusé (${response.status})`);
+    error.status = 502;
+    throw error;
+  }
+  return { sent: true, id: body.id || '' };
+}
+
+async function authUserById(userId) {
+  const cached = authUserCache.get(userId);
+  if (cached && cached.expiresAt > Date.now()) return cached.user;
+  const response = await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+    headers: {
+      apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),
+      Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`
+    }
+  });
+  if (!response.ok) return null;
+  const user = await response.json();
+  authUserCache.set(userId, { user, expiresAt: Date.now() + 10 * 60_000 });
+  return user;
 }
 
 const MIME_BY_EXTENSION = new Map([
@@ -485,7 +539,55 @@ async function resetUserPassword(req, res) {
   if (!response.ok) return sendJson(req, res, response.status, { error: data.msg || data.message || 'Réinitialisation impossible.' });
   await fetch(`${configured('SUPABASE_URL')}/rest/v1/profiles?user_id=eq.${encodeURIComponent(targetId)}`, { method: 'PATCH', headers: { apikey: configured('SUPABASE_SERVICE_ROLE_KEY'), Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' }, body: JSON.stringify({ password_change_required: true, updated_at: new Date().toISOString() }) });
   if (requestId) await fetch(`${configured('SUPABASE_URL')}/rest/v1/account_recovery_requests?id=eq.${encodeURIComponent(requestId)}`, { method: 'PATCH', headers: { apikey: configured('SUPABASE_SERVICE_ROLE_KEY'), Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' }, body: JSON.stringify({ status: 'completed', handled_by: admin.id, handled_at: new Date().toISOString() }) });
-  return sendJson(req, res, 200, { ok: true, userId: targetId });
+  let emailSent = false;
+  if (email) {
+    try {
+      const result = await sendTransactionalEmail({
+        to: email,
+        subject: 'Ton mot de passe temporaire DanaTrap RSX',
+        text: `Dzl 971 a généré un mot de passe temporaire pour ton compte DanaTrap RSX : ${password}. Connecte-toi puis change-le immédiatement dans Paramètres > Sécurité.`,
+        html: `<div style="font-family:Arial,sans-serif;background:#090a0c;color:#f5f5f2;padding:30px;border-radius:20px"><h2 style="color:#f6c90e">DanaTrap RSX</h2><p>Dzl 971 a généré un mot de passe temporaire pour ton compte.</p><div style="font-size:22px;font-weight:800;background:#17191f;padding:16px;border-radius:12px;letter-spacing:1px">${htmlEscape(password)}</div><p>Connecte-toi puis change-le immédiatement dans <strong>Paramètres &gt; Sécurité</strong>.</p><a href="${publicSiteUrl()}/#/connexion" style="display:inline-block;background:#f6c90e;color:#090a0c;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:800">Ouvrir DanaTrap RSX</a></div>`
+      });
+      emailSent = result.sent === true;
+    } catch (error) {
+      console.warn('[DanaTrap email temporaire]', error.message);
+    }
+  }
+  return sendJson(req, res, 200, { ok: true, userId: targetId, emailSent });
+}
+
+async function sendRecoveryLink(req, res) {
+  const admin = await requireAdmin(req);
+  const { email, requestId } = await readJson(req);
+  if (!email) return sendJson(req, res, 400, { error: 'Adresse e-mail manquante.' });
+  const response = await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/generate_link`, {
+    method: 'POST',
+    headers: {
+      apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),
+      Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ type: 'recovery', email, options: { redirectTo: `${publicSiteUrl()}/#/connexion` } })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return sendJson(req, res, response.status, { error: data.msg || data.message || 'Lien de récupération impossible.' });
+  const actionLink = data.action_link || data.properties?.action_link || '';
+  let emailSent = false;
+  if (actionLink) {
+    try {
+      const result = await sendTransactionalEmail({
+        to: email,
+        subject: 'Récupération de ton compte DanaTrap RSX',
+        text: `Dzl 971 a préparé un lien sécurisé pour réinitialiser ton mot de passe : ${actionLink}`,
+        html: `<div style="font-family:Arial,sans-serif;background:#090a0c;color:#f5f5f2;padding:30px;border-radius:20px"><h2 style="color:#f6c90e">Récupération DanaTrap RSX</h2><p>Dzl 971 a validé ta demande de récupération.</p><a href="${htmlEscape(actionLink)}" style="display:inline-block;background:#f6c90e;color:#090a0c;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:800">Créer un nouveau mot de passe</a><p style="color:#9ca0aa">Ce lien est personnel. Ne le partage pas.</p></div>`
+      });
+      emailSent = result.sent === true;
+    } catch (error) {
+      console.warn('[DanaTrap recovery email]', error.message);
+    }
+  }
+  if (requestId) await rest(`account_recovery_requests?id=eq.${encodeURIComponent(requestId)}`, { method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({ status: emailSent ? 'completed' : 'processing', handled_by: admin.id, handled_at:new Date().toISOString() }) });
+  return sendJson(req, res, 200, { ok:true, emailSent, actionLink: emailSent ? '' : actionLink });
 }
 
 async function deleteUser(req, res) {
@@ -509,6 +611,170 @@ async function deleteUser(req, res) {
 
 const serviceHeaders = () => ({ apikey: configured('SUPABASE_SERVICE_ROLE_KEY'), Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`, 'Content-Type': 'application/json' });
 async function rest(path, options={}) { const response=await fetch(`${configured('SUPABASE_URL')}/rest/v1/${path}`,{...options,headers:{...serviceHeaders(),...(options.headers||{})}}); const text=await response.text(); let data=null; try{data=text?JSON.parse(text):null;}catch{data=text;} if(!response.ok){const e=new Error(typeof data==='object'?(data.message||data.error||JSON.stringify(data)):String(data||'Erreur Supabase'));e.status=response.status;throw e;} return data; }
+
+
+function notificationPreferenceKey(type = '') {
+  if (type === 'message') return 'messages';
+  if (['reservation_reminder','waitlist'].includes(type)) return 'reservation_reminders';
+  if (String(type).startsWith('reservation')) return 'reservations';
+  return 'email';
+}
+
+async function markNotificationEmail(notification, status, details = {}) {
+  const payload = { ...(notification.payload || {}), email_delivery: { status, at: new Date().toISOString(), ...details } };
+  await rest(`notifications?id=eq.${encodeURIComponent(notification.id)}`, { method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({ payload }) });
+}
+
+async function processNotificationEmails(limit = 60) {
+  if (!emailConfigured()) return { configured:false, sent:0, skipped:0, failed:0 };
+  const since = new Date(Date.now() - 72 * 3600_000).toISOString();
+  const rows = await rest(`notifications?select=*&created_at=gte.${encodeURIComponent(since)}&order=created_at.asc&limit=200`);
+  const pending = (rows || []).filter(row => !row.payload?.email_delivery?.status).slice(0, limit);
+  let sent = 0, skipped = 0, failed = 0;
+  for (const notification of pending) {
+    try {
+      const profiles = await rest(`profiles?user_id=eq.${encodeURIComponent(notification.user_id)}&select=name,notification_preferences`);
+      const profile = profiles?.[0] || {};
+      const preferences = profile.notification_preferences || {};
+      const key = notificationPreferenceKey(notification.type);
+      if (preferences.email === false || preferences[key] === false) {
+        await markNotificationEmail(notification, 'skipped', { reason:'USER_PREFERENCE' });
+        skipped += 1;
+        continue;
+      }
+      const user = await authUserById(notification.user_id);
+      if (!user?.email) {
+        await markNotificationEmail(notification, 'skipped', { reason:'EMAIL_MISSING' });
+        skipped += 1;
+        continue;
+      }
+      const actionUrl = `${publicSiteUrl()}/${String(notification.link || '#/app/notifications').replace(/^\//,'')}`;
+      const result = await sendTransactionalEmail({
+        to: user.email,
+        subject: notification.title || 'Nouvelle activité DanaTrap RSX',
+        text: `${notification.body || ''}
+
+Ouvrir : ${actionUrl}`,
+        html: `<div style="font-family:Arial,sans-serif;background:#090a0c;color:#f5f5f2;padding:30px;border-radius:20px"><h2 style="color:#f6c90e">${htmlEscape(notification.title || 'DanaTrap RSX')}</h2><p>${htmlEscape(notification.body || '')}</p><a href="${htmlEscape(actionUrl)}" style="display:inline-block;background:#f6c90e;color:#090a0c;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:800">Ouvrir DanaTrap RSX</a></div>`
+      });
+      await markNotificationEmail(notification, 'sent', { provider_id:result.id || '' });
+      sent += 1;
+    } catch (error) {
+      failed += 1;
+      try { await markNotificationEmail(notification, 'failed', { error:String(error.message || error).slice(0,500) }); } catch {}
+    }
+  }
+  return { configured:true, sent, skipped, failed, pending:pending.length };
+}
+
+function extractDriveFileIds(value) {
+  const ids = new Set();
+  const visit = item => {
+    if (!item) return;
+    if (Array.isArray(item)) return item.forEach(visit);
+    if (typeof item === 'object') {
+      if (item.drive_id) ids.add(String(item.drive_id));
+      if (item.id && (item.kind || item.name || item.mimeType)) ids.add(String(item.id));
+      for (const nested of Object.values(item)) visit(nested);
+      return;
+    }
+    if (typeof item === 'string') {
+      const match = item.match(/\/(?:public-media|media)\/([^?/#]+)/);
+      if (match) ids.add(decodeURIComponent(match[1]));
+    }
+  };
+  visit(value);
+  return [...ids].filter(Boolean);
+}
+
+async function setDriveTrash(fileId, trashed) {
+  const token = await googleAccessToken();
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,trashed`, {
+    method:'PATCH',
+    headers:{ Authorization:`Bearer ${token}`, 'Content-Type':'application/json' },
+    body:JSON.stringify({ trashed:Boolean(trashed) })
+  });
+  if (!response.ok && response.status !== 404) throw new Error(`Drive trash ${response.status}`);
+  return response.ok;
+}
+
+async function permanentlyDeleteDriveFile(fileId) {
+  const token = await googleAccessToken();
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`, { method:'DELETE', headers:{ Authorization:`Bearer ${token}` } });
+  if (!response.ok && response.status !== 404) throw new Error(`Drive delete ${response.status}`);
+  return response.ok;
+}
+
+async function performBackup(startedBy = null, scope = 'automatic') {
+  const run = await rest('backup_runs', { method:'POST', headers:{Prefer:'return=representation'}, body:JSON.stringify({ started_by:startedBy, status:'running', scope, started_at:new Date().toISOString() }) });
+  const id = run?.[0]?.id;
+  try {
+    const data = await exportData();
+    const file = await uploadBackupToDrive(data);
+    if (id) await rest(`backup_runs?id=eq.${encodeURIComponent(id)}`, { method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({ status:'completed', manifest:{ drive_file:file, counts:Object.fromEntries(Object.entries(data.tables).map(([key,value])=>[key,Array.isArray(value)?value.length:0])) }, completed_at:new Date().toISOString() }) });
+    return { ok:true, file, backupId:id };
+  } catch (error) {
+    if (id) await rest(`backup_runs?id=eq.${encodeURIComponent(id)}`, { method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({ status:'failed', error_message:String(error.message || error).slice(0,1000), completed_at:new Date().toISOString() }) });
+    throw error;
+  }
+}
+
+async function runAutomaticBackup() {
+  const rows = await rest('backup_runs?select=completed_at,status&status=eq.completed&order=completed_at.desc&limit=1');
+  const last = rows?.[0]?.completed_at ? new Date(rows[0].completed_at).getTime() : 0;
+  if (last && Date.now() - last < 24 * 3600_000) return { skipped:true, reason:'RECENT_BACKUP' };
+  return performBackup(null, 'automatic');
+}
+
+async function purgeExpiredTrash() {
+  const due = new Date().toISOString();
+  const rows = await rest(`trash_items?select=*&restored_at=is.null&permanently_deleted_at=is.null&restore_until=lte.${encodeURIComponent(due)}&limit=50`);
+  let purged = 0, failed = 0;
+  for (const item of rows || []) {
+    try {
+      for (const fileId of extractDriveFileIds([item.drive_files, item.snapshot])) {
+        try { await permanentlyDeleteDriveFile(fileId); } catch (error) { console.warn('[DanaTrap purge Drive]', fileId, error.message); }
+      }
+      if (item.entity_type === 'beat') {
+        try { await rest(`beats?id=eq.${encodeURIComponent(item.entity_id)}`, { method:'DELETE', headers:{Prefer:'return=minimal'} }); } catch (error) { console.warn('[DanaTrap purge beat]', error.message); }
+      }
+      await rest(`trash_items?id=eq.${encodeURIComponent(item.id)}`, { method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({ permanently_deleted_at:new Date().toISOString() }) });
+      purged += 1;
+    } catch (error) {
+      failed += 1;
+    }
+  }
+  return { purged, failed };
+}
+
+async function runReservationMaintenance() {
+  let expired = null, reminders = null;
+  try { expired = await rest('rpc/expire_reservations_v5', { method:'POST', body:'{}' }); } catch (error) { console.warn('[DanaTrap expiration]', error.message); }
+  try { reminders = await rest('rpc/send_reservation_reminders_v5', { method:'POST', body:'{}' }); } catch (error) { console.warn('[DanaTrap rappels]', error.message); }
+  return { expired, reminders };
+}
+
+async function runBackgroundJobs(source = 'server') {
+  if (backgroundState.running) return { ok:true, skipped:true, reason:'ALREADY_RUNNING', ...backgroundState };
+  backgroundState.running = true;
+  const startedAt = new Date().toISOString();
+  try {
+    const reservation = await runReservationMaintenance();
+    const emails = await processNotificationEmails();
+    const backup = await runAutomaticBackup().catch(error => ({ ok:false, error:error.message }));
+    const trash = await purgeExpiredTrash().catch(error => ({ purged:0, failed:1, error:error.message }));
+    backgroundState.lastRunAt = new Date().toISOString();
+    backgroundState.lastError = '';
+    backgroundState.lastResult = { source, startedAt, reservation, emails, backup, trash };
+    return { ok:true, ...backgroundState.lastResult };
+  } catch (error) {
+    backgroundState.lastRunAt = new Date().toISOString();
+    backgroundState.lastError = String(error.message || error);
+    return { ok:false, source, startedAt, error:backgroundState.lastError };
+  } finally {
+    backgroundState.running = false;
+  }
+}
 
 const LEGAL_DEFAULTS=[
  {document_type:'terms',version:'1.0',title:'Conditions d’utilisation',content:'DanaTrap RSX est une plateforme de mise en relation musicale. Chaque membre reste responsable des contenus, fichiers, droits, licences et accords qu’il publie.',active:true},
@@ -534,10 +800,10 @@ async function requestAccountDeletion(req,res){
 }
 async function requireAdmin(req){const user=await verifyUser(req);if(!(await isAdmin(user))){const e=new Error('Administrateur requis.');e.status=403;throw e;}return user;}
 async function getBeatSnapshot(beatId){const rows=await rest(`beats?id=eq.${encodeURIComponent(beatId)}&select=*,licenses(*)`);return rows?.[0]||null;}
-async function trashBeat(req,res){const user=await verifyUser(req);const {beatId}=await readJson(req);if(!beatId)return sendJson(req,res,400,{error:'Production manquante.'});const beat=await getBeatSnapshot(beatId);if(!beat)return sendJson(req,res,404,{error:'Production introuvable.'});if(String(beat.producer_id)!==String(user.id)&&!(await isAdmin(user)))return sendJson(req,res,403,{error:'Action non autorisée.'});const design={...(beat.design||{}),_trashed:true};const trash=await rest('trash_items',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({entity_type:'beat',entity_id:beat.id,owner_id:beat.producer_id,deleted_by:user.id,snapshot:beat,drive_files:beat.files||[]})});await rest(`beats?id=eq.${encodeURIComponent(beat.id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({visibility:'Brouillon',design})});return sendJson(req,res,200,{ok:true,trash:trash?.[0]||null});}
-async function restoreTrash(req,res){await requireAdmin(req);const {trashId}=await readJson(req);const rows=await rest(`trash_items?id=eq.${encodeURIComponent(trashId)}&select=*`);const item=rows?.[0];if(!item)return sendJson(req,res,404,{error:'Élément de corbeille introuvable.'});if(item.entity_type==='beat'){const snap={...(item.snapshot||{})};const licenses=snap.licenses||[];delete snap.licenses;delete snap.created_at;delete snap.updated_at;snap.design={...(snap.design||{})};delete snap.design._trashed;await rest(`beats?id=eq.${encodeURIComponent(item.entity_id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify(snap)});await rest(`licenses?beat_id=eq.${encodeURIComponent(item.entity_id)}`,{method:'DELETE'});if(licenses.length)await rest('licenses',{method:'POST',body:JSON.stringify(licenses.map(({id,...l})=>({...l,beat_id:item.entity_id})))});}await rest(`trash_items?id=eq.${encodeURIComponent(trashId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({restored_at:new Date().toISOString()})});return sendJson(req,res,200,{ok:true});}
+async function trashBeat(req,res){const user=await verifyUser(req);const {beatId}=await readJson(req);if(!beatId)return sendJson(req,res,400,{error:'Production manquante.'});const beat=await getBeatSnapshot(beatId);if(!beat)return sendJson(req,res,404,{error:'Production introuvable.'});if(String(beat.producer_id)!==String(user.id)&&!(await isAdmin(user)))return sendJson(req,res,403,{error:'Action non autorisée.'});const design={...(beat.design||{}),_trashed:true};const driveIds=extractDriveFileIds(beat);const driveWarnings=[];for(const fileId of driveIds){try{await setDriveTrash(fileId,true);}catch(error){driveWarnings.push({fileId,error:error.message});}}const trash=await rest('trash_items',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({entity_type:'beat',entity_id:beat.id,owner_id:beat.producer_id,deleted_by:user.id,snapshot:beat,drive_files:beat.files||[],restore_until:new Date(Date.now()+30*86400000).toISOString()})});await rest(`beats?id=eq.${encodeURIComponent(beat.id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({visibility:'Brouillon',design})});return sendJson(req,res,200,{ok:true,trash:trash?.[0]||null,driveTrashed:driveIds.length-driveWarnings.length,driveWarnings});}
+async function restoreTrash(req,res){await requireAdmin(req);const {trashId}=await readJson(req);const rows=await rest(`trash_items?id=eq.${encodeURIComponent(trashId)}&select=*`);const item=rows?.[0];if(!item)return sendJson(req,res,404,{error:'Élément de corbeille introuvable.'});if(item.permanently_deleted_at)return sendJson(req,res,410,{error:'Le délai de restauration de 30 jours est dépassé.'});for(const fileId of extractDriveFileIds([item.drive_files,item.snapshot])){try{await setDriveTrash(fileId,false);}catch(error){console.warn('[DanaTrap restore Drive]',fileId,error.message);}}if(item.entity_type==='beat'){const snap={...(item.snapshot||{})};const licenses=snap.licenses||[];delete snap.licenses;delete snap.created_at;delete snap.updated_at;snap.design={...(snap.design||{})};delete snap.design._trashed;await rest(`beats?id=eq.${encodeURIComponent(item.entity_id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify(snap)});await rest(`licenses?beat_id=eq.${encodeURIComponent(item.entity_id)}`,{method:'DELETE'});if(licenses.length)await rest('licenses',{method:'POST',body:JSON.stringify(licenses.map(({id,...l})=>({...l,beat_id:item.entity_id})))});}await rest(`trash_items?id=eq.${encodeURIComponent(trashId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({restored_at:new Date().toISOString()})});return sendJson(req,res,200,{ok:true});}
 async function driveAbout(){const token=await googleAccessToken();const response=await fetch('https://www.googleapis.com/drive/v3/about?fields=user,storageQuota',{headers:{Authorization:`Bearer ${token}`}});if(!response.ok)throw new Error(`Drive health ${response.status}`);return response.json();}
-async function systemHealth(req,res){await requireAdmin(req);const started=Date.now();let supabase={ok:false},drive={ok:false};try{await rest('profiles?select=user_id&limit=1');supabase={ok:true};}catch(e){supabase={ok:false,error:e.message};}try{const about=await driveAbout();drive={ok:true,...about};}catch(e){drive={ok:false,error:e.message};}const result={ok:supabase.ok&&drive.ok,version:VERSION,supabase,drive,response_time_ms:Date.now()-started,checked_at:new Date().toISOString()};try{await rest('system_health_checks',{method:'POST',body:JSON.stringify([{service:'Supabase',status:supabase.ok?'healthy':'error',response_time_ms:result.response_time_ms,details:supabase},{service:'Google Drive',status:drive.ok?'healthy':'error',response_time_ms:result.response_time_ms,details:drive}])});}catch{}return sendJson(req,res,200,result);}
+async function systemHealth(req,res){await requireAdmin(req);const started=Date.now();let supabase={ok:false},drive={ok:false},lastBackup=null;try{await rest('profiles?select=user_id&limit=1');supabase={ok:true};}catch(e){supabase={ok:false,error:e.message};}try{const about=await driveAbout();drive={ok:true,...about};}catch(e){drive={ok:false,error:e.message};}try{lastBackup=(await rest('backup_runs?select=status,completed_at,manifest&order=started_at.desc&limit=1'))?.[0]||null;}catch{}const email={configured:emailConfigured(),provider:emailConfigured()?'Resend':'Non configuré',from:process.env.EMAIL_FROM||''};const automation={last_run_at:backgroundState.lastRunAt,last_error:backgroundState.lastError,last_result:backgroundState.lastResult,last_backup:lastBackup};const result={ok:supabase.ok&&drive.ok,version:VERSION,supabase,drive,email,automation,response_time_ms:Date.now()-started,checked_at:new Date().toISOString()};try{await rest('system_health_checks',{method:'POST',body:JSON.stringify([{service:'Supabase',status:supabase.ok?'healthy':'error',response_time_ms:result.response_time_ms,details:supabase},{service:'Google Drive',status:drive.ok?'healthy':'error',response_time_ms:result.response_time_ms,details:drive},{service:'E-mail',status:email.configured?'healthy':'warning',response_time_ms:0,details:email},{service:'Automatisation',status:backgroundState.lastError?'error':'healthy',response_time_ms:0,details:automation}])});}catch{}return sendJson(req,res,200,result);}
 async function exportData(){const tables=['profiles','beats','licenses','reservations','reservation_events','conversations','conversation_members','messages','notifications','announcements','collaboration_projects','reports','moderation_queue','admin_tasks','badges','profile_badges','site_settings','feature_flags'];const out={exported_at:new Date().toISOString(),version:VERSION,tables:{}};for(const table of tables){try{out.tables[table]=await rest(`${table}?select=*&limit=10000`);}catch(e){out.tables[table]={error:e.message};}}return out;}
 function csvEscape(v){const value=typeof v==='object'?JSON.stringify(v):String(v??'');return `"${value.replaceAll('"','""')}"`;}
 async function adminExport(req,res,url){await requireAdmin(req);const format=url.searchParams.get('format')==='csv'?'csv':'json';const data=await exportData();if(format==='json')return sendJson(req,res,200,{filename:`danatrap-rsx-export-${Date.now()}.json`,mimeType:'application/json',content:JSON.stringify(data,null,2)});const lines=['table,id,name,status,created_at'];for(const [table,rows] of Object.entries(data.tables)){if(!Array.isArray(rows))continue;for(const row of rows)lines.push([table,row.id||row.user_id||row.key||'',row.name||row.title||row.email||'',row.status||row.visibility||'',row.created_at||row.updated_at||''].map(csvEscape).join(','));}return sendJson(req,res,200,{filename:`danatrap-rsx-export-${Date.now()}.csv`,mimeType:'text/csv',content:lines.join('\n')});}
@@ -550,7 +816,7 @@ Content-Type: application/json
 
 `),Buffer.from(JSON.stringify(payload,null,2)),Buffer.from(`
 --${boundary}--`)]);const response=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,size,createdTime',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':`multipart/related; boundary=${boundary}`},body});if(!response.ok)throw new Error(`Sauvegarde Drive refusée (${response.status})`);return response.json();}
-async function adminBackup(req,res){const admin=await requireAdmin(req);const run=await rest('backup_runs',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({started_by:admin.id,status:'running',scope:'full',started_at:new Date().toISOString()})});const id=run?.[0]?.id;try{const data=await exportData();const file=await uploadBackupToDrive(data);if(id)await rest(`backup_runs?id=eq.${encodeURIComponent(id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'completed',manifest:{drive_file:file,counts:Object.fromEntries(Object.entries(data.tables).map(([k,v])=>[k,Array.isArray(v)?v.length:0]))},completed_at:new Date().toISOString()})});return sendJson(req,res,200,{ok:true,file,backupId:id});}catch(e){if(id)await rest(`backup_runs?id=eq.${encodeURIComponent(id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'failed',error_message:e.message,completed_at:new Date().toISOString()})});throw e;}}
+async function adminBackup(req,res){const admin=await requireAdmin(req);return sendJson(req,res,200,await performBackup(admin.id,'manual'));}
 
 async function requestVerification(req,res){const user=await verifyUser(req);const {message=''}=await readJson(req);const rows=await rest('moderation_queue',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({source_type:'verification_request',source_id:user.id,reason:'Demande de certification',severity:'low',status:'pending',payload:{message,profile_id:user.id}})});return sendJson(req,res,200,{ok:true,request:rows?.[0]||null});}
 async function verifyProfileAdmin(req,res){const admin=await requireAdmin(req);const {userId,moderationId}=await readJson(req);if(!userId)return sendJson(req,res,400,{error:'Profil manquant.'});await rest(`profiles?user_id=eq.${encodeURIComponent(userId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({verified:true})});const badges=await rest('badges?slug=eq.verified&select=id');if(badges?.[0])await rest('profile_badges',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:userId,badge_id:badges[0].id,assigned_by:admin.id})});if(moderationId)await rest(`moderation_queue?id=eq.${encodeURIComponent(moderationId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'approved',reviewed_by:admin.id,reviewed_at:new Date().toISOString()})});return sendJson(req,res,200,{ok:true});}
@@ -650,6 +916,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/v1/account/export') return await accountExport(req,res);
     if (req.method === 'POST' && url.pathname === '/api/v1/account/delete-request') return await requestAccountDeletion(req,res);
+    if (['GET','POST'].includes(req.method) && url.pathname === '/api/v1/jobs/tick') {
+      if (!rateAllowed(req, 'background-jobs', 12, 60 * 60_000)) return sendJson(req,res,429,{error:'Automatisation déjà sollicitée récemment.'});
+      return sendJson(req,res,200,await runBackgroundJobs('http'));
+    }
     if (req.method === 'POST' && url.pathname === '/upload-session') {
       if (!rateAllowed(req, 'upload-session', 60)) return sendJson(req, res, 429, { error: 'Trop de créations de session d’upload.' });
       return await createUploadSession(req, res);
@@ -675,6 +945,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/admin/reset-password') {
       if (!rateAllowed(req, 'admin', 30)) return sendJson(req, res, 429, { error: 'Trop de requêtes administrateur.' });
       return await resetUserPassword(req, res);
+    }
+    if (req.method === 'POST' && url.pathname === '/admin/send-recovery-link') {
+      if (!rateAllowed(req, 'admin', 30)) return sendJson(req, res, 429, { error: 'Trop de requêtes administrateur.' });
+      return await sendRecoveryLink(req, res);
     }
     if (req.method === 'POST' && url.pathname === '/admin/delete-user') {
       if (!rateAllowed(req, 'admin', 30)) return sendJson(req, res, 429, { error: 'Trop de requêtes administrateur.' });
@@ -714,4 +988,5 @@ const server = http.createServer(async (req, res) => {
 
 server.requestTimeout = 10 * 60 * 1000;
 server.headersTimeout = 65 * 1000;
-server.listen(PORT, '0.0.0.0', () => {console.log(`[DanaTrap RSX] API démarrée sur le port ${PORT}`);setTimeout(()=>ensureLegalDocuments(),1500);});
+server.listen(PORT, '0.0.0.0', () => {console.log(`[DanaTrap RSX] API démarrée sur le port ${PORT}`);setTimeout(()=>ensureLegalDocuments(),1500);setTimeout(()=>runBackgroundJobs('startup').catch(()=>{}),20_000);});
+setInterval(()=>runBackgroundJobs('interval').catch(error=>console.warn('[DanaTrap jobs]',error.message)),15*60_000).unref();
