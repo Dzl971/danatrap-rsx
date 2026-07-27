@@ -318,3 +318,23 @@ body{font-family:var(--site-font),Inter,system-ui,sans-serif;transition:backgrou
 .badge-admin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.badge-admin-grid article{padding:1rem;border:1px solid var(--line);border-radius:20px;background:var(--panel2)}.badge-admin-grid article>div:first-child{display:flex;align-items:center;gap:.7rem;margin-bottom:.8rem}.badge-checkboxes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.45rem;margin-bottom:.8rem}.badge-checkboxes label{font-size:.8rem;color:var(--muted)}.audit-list{display:grid;gap:.4rem}.audit-list article{display:grid;grid-template-columns:150px 1fr auto;gap:1rem;padding:.75rem;border-bottom:1px solid var(--line)}
 @media(max-width:900px){.health-grid,.badge-admin-grid{grid-template-columns:1fr 1fr}.moderation-item,.error-item,.trash-item{align-items:flex-start;flex-direction:column}.audit-list article{grid-template-columns:1fr}.phase6-admin .admin-table-row{min-width:940px}}
 @media(max-width:560px){.health-grid,.badge-admin-grid{grid-template-columns:1fr}.badge-checkboxes{grid-template-columns:1fr}}
+
+/* ============================================================
+   DanaTrap RSX V5 — Correctif Phase 6.3 : calques du profil public
+   ============================================================ */
+.public-profile-v6{isolation:isolate}
+.public-profile-v6>.profile-banner,
+.public-profile-v6>.custom-profile-head,
+.public-profile-v6>.profile-public-stats,
+.public-profile-v6>.profile-public-content,
+.public-profile-v6>.profile-numbers,
+.public-profile-v6>.profile-main{position:relative;z-index:2}
+.public-profile-v6>.custom-profile-head{z-index:4}
+.public-profile-v6>.profile-banner{z-index:2}
+.public-profile-v6>.profile-ambient{z-index:1!important;pointer-events:none}
+.public-profile-v6:after{z-index:1!important;pointer-events:none}
+.public-profile-v6 .profile-public-stats,
+.public-profile-v6 .profile-public-content{opacity:1;filter:none;visibility:visible}
+.public-profile-v6 .profile-main{padding:26px 30px 34px}
+@media(max-width:900px){.public-profile-v6 .profile-main{padding:20px 16px 28px}}
+@media(max-width:620px){.public-profile-v6 .profile-main{padding:16px 10px 24px}}
