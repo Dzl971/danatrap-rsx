@@ -1,4 +1,4 @@
-const CACHE='drsx-v5-phase11-4-form-performance';
+const CACHE='drsx-v5-phase11-5-invoice-a4-fullsize';
 const IMAGE_CACHE='drsx-images-v5-phase9';
 const FONT_CACHE='drsx-fonts-v5-phase9';
 const STATIC=['./','./index.html','./assets/styles.css','./assets/data-service.js','./assets/app.js','./assets/fonts/fonts.css','./assets/fonts/fonts.js','./manifest.webmanifest','./icon.svg','./icon-192.png','./icon-512.png'];
