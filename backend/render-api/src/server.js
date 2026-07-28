@@ -3,7 +3,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = '5.0.0-phase12';
+const VERSION = '5.0.0-phase12.1';
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
@@ -590,24 +590,169 @@ async function sendRecoveryLink(req, res) {
   return sendJson(req, res, 200, { ok:true, emailSent, actionLink: emailSent ? '' : actionLink });
 }
 
+async function fetchAuthUserById(userId) {
+  const response = await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+    headers: {
+      apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),
+      Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`
+    }
+  });
+  if (response.status === 404) return null;
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.msg || data.message || `Lecture Auth impossible (${response.status}).`);
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
+async function resolveAuthUserId(value) {
+  const candidate = String(value || '').trim();
+  if (!candidate) return '';
+  try {
+    const direct = await fetchAuthUserById(candidate);
+    if (direct?.id) return direct.id;
+  } catch {}
+  try {
+    const rows = await rest(`profiles?or=(id.eq.${encodeURIComponent(candidate)},user_id.eq.${encodeURIComponent(candidate)})&select=user_id&limit=1`);
+    if (rows?.[0]?.user_id) return rows[0].user_id;
+  } catch {}
+  return candidate;
+}
+
+async function hardDeleteAuthUser(userId) {
+  const response = await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+    headers: {
+      apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),
+      Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`,
+      Accept: 'application/json'
+    }
+  });
+  const details = await response.text();
+  if (!response.ok && response.status !== 404) {
+    const error = new Error(`Suppression Auth impossible (${response.status}) : ${details.slice(0, 500) || 'réponse vide'}`);
+    error.status = response.status;
+    throw error;
+  }
+  const verification = await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+    headers: {
+      apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),
+      Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`
+    }
+  });
+  if (verification.ok) {
+    const error = new Error('Supabase a répondu sans erreur, mais le compte existe toujours après vérification.');
+    error.status = 409;
+    throw error;
+  }
+  if (verification.status !== 404) {
+    const body = await verification.text();
+    const error = new Error(`Vérification de suppression impossible (${verification.status}) : ${body.slice(0, 300)}`);
+    error.status = verification.status;
+    throw error;
+  }
+}
+
 async function deleteUser(req, res) {
   const admin = await verifyUser(req);
   if (!(await isAdmin(admin))) return sendJson(req, res, 403, { error: 'Administrateur requis.' });
-  const { userId } = await readJson(req);
-  const targetId=String(userId||'').trim();
+  const payload = await readJson(req);
+  const targetId = await resolveAuthUserId(payload.userId || payload.profileId || payload.email);
   if (!targetId) return sendJson(req, res, 400, { error: 'Identifiant utilisateur manquant.' });
   if (targetId === String(admin.id)) return sendJson(req, res, 400, { error: 'Tu ne peux pas supprimer ton propre compte administrateur.' });
-  let target=null;
-  try{const lookup=await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/users/${encodeURIComponent(targetId)}`,{headers:{apikey:configured('SUPABASE_SERVICE_ROLE_KEY'),Authorization:`Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`}});if(lookup.ok)target=await lookup.json();}catch{}
-  try{await rest('audit_logs',{method:'POST',body:JSON.stringify({actor_id:admin.id,action:'user.delete',entity_type:'user',entity_id:targetId,before_data:{email:target?.email||'',name:target?.user_metadata?.name||''}})});}catch{}
-  const response = await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/users/${encodeURIComponent(targetId)}?should_soft_delete=false`, {
-    method: 'DELETE',
-    headers: {apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`}
+
+  const target = await fetchAuthUserById(targetId).catch(() => null);
+  const profiles = await rest(`profiles?user_id=eq.${encodeURIComponent(targetId)}&select=*`).catch(() => []);
+  const beats = await rest(`beats?producer_id=eq.${encodeURIComponent(targetId)}&select=*,licenses(*)`).catch(() => []);
+  const driveIds = [...new Set((beats || []).flatMap(extractDriveFileIds))];
+
+  for (const beat of beats || []) {
+    try {
+      const existing = await rest(`trash_items?entity_type=eq.beat&entity_id=eq.${encodeURIComponent(beat.id)}&restored_at=is.null&permanently_deleted_at=is.null&select=id&limit=1`);
+      if (!existing?.length) {
+        await rest('trash_items', {
+          method: 'POST',
+          headers: { Prefer: 'return=minimal' },
+          body: JSON.stringify({
+            entity_type: 'beat', entity_id: beat.id, owner_id: targetId, deleted_by: admin.id,
+            snapshot: beat, drive_files: beat.files || [], restore_until: new Date(Date.now() + 30 * 86400000).toISOString()
+          })
+        });
+      }
+    } catch (error) {
+      console.warn('[DanaTrap user delete trash snapshot]', beat.id, error.message);
+    }
+  }
+
+  try {
+    await rest('audit_logs', {
+      method: 'POST',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({
+        actor_id: admin.id, action: 'user.delete', entity_type: 'user', entity_id: targetId,
+        before_data: { email: target?.email || '', name: profiles?.[0]?.name || target?.user_metadata?.name || '', beat_count: beats?.length || 0 }
+      })
+    });
+  } catch {}
+
+  let firstDeleteError = null;
+  try {
+    await hardDeleteAuthUser(targetId);
+  } catch (error) {
+    firstDeleteError = error;
+  }
+
+  if (firstDeleteError) {
+    // Les anciennes bases peuvent contenir des relations qui empêchent la cascade Auth.
+    // On supprime d'abord le profil public (toutes les tables DanaTrap sont en cascade), puis on réessaie Auth.
+    try {
+      await rest(`profiles?user_id=eq.${encodeURIComponent(targetId)}`, {
+        method: 'DELETE',
+        headers: { Prefer: 'return=representation' }
+      });
+    } catch (cleanupError) {
+      console.warn('[DanaTrap delete profile fallback]', cleanupError.message);
+    }
+    try {
+      await hardDeleteAuthUser(targetId);
+      firstDeleteError = null;
+    } catch (retryError) {
+      firstDeleteError = retryError;
+    }
+  }
+
+  if (firstDeleteError) {
+    return sendJson(req, res, firstDeleteError.status || 500, {
+      error: 'Le compte n’a pas pu être supprimé définitivement.',
+      details: firstDeleteError.message
+    });
+  }
+
+  // Nettoyage de sécurité si une ancienne configuration n'avait pas la cascade attendue.
+  await rest(`profiles?user_id=eq.${encodeURIComponent(targetId)}`, {
+    method: 'DELETE', headers: { Prefer: 'return=minimal' }
+  }).catch(() => null);
+
+  const driveWarnings = [];
+  for (const fileId of driveIds) {
+    try { await setDriveTrash(fileId, true); }
+    catch (error) { driveWarnings.push({ fileId, error: error.message }); }
+  }
+
+  const stillExists = await fetchAuthUserById(targetId).catch(() => null);
+  if (stillExists) return sendJson(req, res, 409, { error: 'Le compte existe encore après la suppression. Recharge puis réessaie.' });
+
+  return sendJson(req, res, 200, {
+    ok: true,
+    deleted: true,
+    userId: targetId,
+    deletedBeats: beats?.length || 0,
+    driveTrashed: driveIds.length - driveWarnings.length,
+    driveWarnings,
+    message: 'Utilisateur supprimé définitivement de Supabase et de DanaTrap RSX.'
   });
-  const details=await response.text();
-  if (!response.ok && response.status!==404) return sendJson(req, res, response.status, { error: 'Suppression Supabase impossible.', details: details.slice(0,500) });
-  try{await rest(`profiles?user_id=eq.${encodeURIComponent(targetId)}`,{method:'DELETE',headers:{Prefer:'return=minimal'}});}catch(error){console.warn('[DanaTrap delete profile cleanup]',error.message);}
-  return sendJson(req, res, 200, { ok: true, userId:targetId, message:'Utilisateur et contenus associés supprimés.' });
 }
 
 async function closeConversation(req,res){
@@ -812,7 +957,42 @@ async function requestAccountDeletion(req,res){
 }
 async function requireAdmin(req){const user=await verifyUser(req);if(!(await isAdmin(user))){const e=new Error('Administrateur requis.');e.status=403;throw e;}return user;}
 async function getBeatSnapshot(beatId){const rows=await rest(`beats?id=eq.${encodeURIComponent(beatId)}&select=*,licenses(*)`);return rows?.[0]||null;}
-async function trashBeat(req,res){const user=await verifyUser(req);const {beatId}=await readJson(req);if(!beatId)return sendJson(req,res,400,{error:'Production manquante.'});const beat=await getBeatSnapshot(beatId);if(!beat)return sendJson(req,res,404,{error:'Production introuvable.'});if(String(beat.producer_id)!==String(user.id)&&!(await isAdmin(user)))return sendJson(req,res,403,{error:'Action non autorisée.'});const design={...(beat.design||{}),_trashed:true};const driveIds=extractDriveFileIds(beat);const driveWarnings=[];for(const fileId of driveIds){try{await setDriveTrash(fileId,true);}catch(error){driveWarnings.push({fileId,error:error.message});}}const trash=await rest('trash_items',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({entity_type:'beat',entity_id:beat.id,owner_id:beat.producer_id,deleted_by:user.id,snapshot:beat,drive_files:beat.files||[],restore_until:new Date(Date.now()+30*86400000).toISOString()})});await rest(`beats?id=eq.${encodeURIComponent(beat.id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({visibility:'Brouillon',design})});return sendJson(req,res,200,{ok:true,trash:trash?.[0]||null,driveTrashed:driveIds.length-driveWarnings.length,driveWarnings});}
+async function trashBeat(req,res){
+  const user=await verifyUser(req);
+  const {beatId}=await readJson(req);
+  const id=String(beatId||'').trim();
+  if(!id)return sendJson(req,res,400,{error:'Production manquante.'});
+  const beat=await getBeatSnapshot(id);
+  if(!beat)return sendJson(req,res,404,{error:'Production introuvable.'});
+  if(String(beat.producer_id)!==String(user.id)&&!(await isAdmin(user)))return sendJson(req,res,403,{error:'Action non autorisée.'});
+
+  const design={...(beat.design||{}),_trashed:true,_trashed_at:new Date().toISOString()};
+  let trashRow=null;
+  const existing=await rest(`trash_items?entity_type=eq.beat&entity_id=eq.${encodeURIComponent(beat.id)}&restored_at=is.null&permanently_deleted_at=is.null&select=*&limit=1`).catch(()=>[]);
+  if(existing?.[0]){
+    trashRow=existing[0];
+  }else{
+    const inserted=await rest('trash_items',{
+      method:'POST',headers:{Prefer:'return=representation'},
+      body:JSON.stringify({entity_type:'beat',entity_id:beat.id,owner_id:beat.producer_id,deleted_by:user.id,snapshot:beat,drive_files:beat.files||[],restore_until:new Date(Date.now()+30*86400000).toISOString()})
+    });
+    trashRow=inserted?.[0]||null;
+  }
+
+  const updated=await rest(`beats?id=eq.${encodeURIComponent(beat.id)}`,{
+    method:'PATCH',headers:{Prefer:'return=representation'},
+    body:JSON.stringify({visibility:'Brouillon',design,updated_at:new Date().toISOString()})
+  });
+  if(!updated?.length||updated[0]?.design?._trashed!==true){
+    return sendJson(req,res,409,{error:'La production n’a pas été retirée du catalogue. Aucune modification confirmée par Supabase.'});
+  }
+
+  const driveIds=extractDriveFileIds(beat),driveWarnings=[];
+  for(const fileId of driveIds){try{await setDriveTrash(fileId,true);}catch(error){driveWarnings.push({fileId,error:error.message});}}
+  try{await rest('audit_logs',{method:'POST',headers:{Prefer:'return=minimal'},body:JSON.stringify({actor_id:user.id,action:'beat.trash',entity_type:'beat',entity_id:beat.id,before_data:{title:beat.title,visibility:beat.visibility}})});}catch{}
+
+  return sendJson(req,res,200,{ok:true,deleted:true,beatId:beat.id,trash:trashRow,driveTrashed:driveIds.length-driveWarnings.length,driveWarnings});
+}
 async function restoreTrash(req,res){await requireAdmin(req);const {trashId}=await readJson(req);const rows=await rest(`trash_items?id=eq.${encodeURIComponent(trashId)}&select=*`);const item=rows?.[0];if(!item)return sendJson(req,res,404,{error:'Élément de corbeille introuvable.'});if(item.permanently_deleted_at)return sendJson(req,res,410,{error:'Le délai de restauration de 30 jours est dépassé.'});for(const fileId of extractDriveFileIds([item.drive_files,item.snapshot])){try{await setDriveTrash(fileId,false);}catch(error){console.warn('[DanaTrap restore Drive]',fileId,error.message);}}if(item.entity_type==='beat'){const snap={...(item.snapshot||{})};const licenses=snap.licenses||[];delete snap.licenses;delete snap.created_at;delete snap.updated_at;snap.design={...(snap.design||{})};delete snap.design._trashed;await rest(`beats?id=eq.${encodeURIComponent(item.entity_id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify(snap)});await rest(`licenses?beat_id=eq.${encodeURIComponent(item.entity_id)}`,{method:'DELETE'});if(licenses.length)await rest('licenses',{method:'POST',body:JSON.stringify(licenses.map(({id,...l})=>({...l,beat_id:item.entity_id})))});}await rest(`trash_items?id=eq.${encodeURIComponent(trashId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({restored_at:new Date().toISOString()})});return sendJson(req,res,200,{ok:true});}
 async function driveAbout(){const token=await googleAccessToken();const response=await fetch('https://www.googleapis.com/drive/v3/about?fields=user,storageQuota',{headers:{Authorization:`Bearer ${token}`}});if(!response.ok)throw new Error(`Drive health ${response.status}`);return response.json();}
 async function systemHealth(req,res){await requireAdmin(req);const started=Date.now();let supabase={ok:false},drive={ok:false},lastBackup=null;try{await rest('profiles?select=user_id&limit=1');supabase={ok:true};}catch(e){supabase={ok:false,error:e.message};}try{const about=await driveAbout();drive={ok:true,...about};}catch(e){drive={ok:false,error:e.message};}try{lastBackup=(await rest('backup_runs?select=status,completed_at,manifest&order=started_at.desc&limit=1'))?.[0]||null;}catch{}const email={configured:emailConfigured(),provider:emailConfigured()?'Resend':'Non configuré',from:process.env.EMAIL_FROM||''};const automation={last_run_at:backgroundState.lastRunAt,last_error:backgroundState.lastError,last_result:backgroundState.lastResult,last_backup:lastBackup};const result={ok:supabase.ok&&drive.ok,version:VERSION,supabase,drive,email,automation,response_time_ms:Date.now()-started,checked_at:new Date().toISOString()};try{await rest('system_health_checks',{method:'POST',body:JSON.stringify([{service:'Supabase',status:supabase.ok?'healthy':'error',response_time_ms:result.response_time_ms,details:supabase},{service:'Google Drive',status:drive.ok?'healthy':'error',response_time_ms:result.response_time_ms,details:drive},{service:'E-mail',status:email.configured?'healthy':'warning',response_time_ms:0,details:email},{service:'Automatisation',status:backgroundState.lastError?'error':'healthy',response_time_ms:0,details:automation}])});}catch{}return sendJson(req,res,200,result);}
