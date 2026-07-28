@@ -3,7 +3,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = '5.0.0-phase11.5';
+const VERSION = '5.0.0-phase12';
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
@@ -476,7 +476,7 @@ async function streamPublicMedia(req, res, fileId) {
   if (String(props.danatrap || '') !== 'true' || !['preview', 'cover'].includes(kind)) {
     return sendJson(req, res, 403, { error: 'Ce fichier n’est pas un média public DanaTrap.' });
   }
-  return pipeDriveMedia(req, res, fileId, token, metadata, 'public, max-age=604800, stale-while-revalidate=2592000, immutable');
+  return pipeDriveMedia(req, res, fileId, token, metadata, 'public, max-age=31536000, s-maxage=31536000, stale-while-revalidate=2592000, immutable');
 }
 
 async function listUsers(req, res) {
@@ -594,18 +594,30 @@ async function deleteUser(req, res) {
   const admin = await verifyUser(req);
   if (!(await isAdmin(admin))) return sendJson(req, res, 403, { error: 'Administrateur requis.' });
   const { userId } = await readJson(req);
-  if (!userId) return sendJson(req, res, 400, { error: 'Identifiant utilisateur manquant.' });
-  if (String(userId) === String(admin.id)) return sendJson(req, res, 400, { error: 'Tu ne peux pas supprimer ton propre compte administrateur.' });
-
-  const response = await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+  const targetId=String(userId||'').trim();
+  if (!targetId) return sendJson(req, res, 400, { error: 'Identifiant utilisateur manquant.' });
+  if (targetId === String(admin.id)) return sendJson(req, res, 400, { error: 'Tu ne peux pas supprimer ton propre compte administrateur.' });
+  let target=null;
+  try{const lookup=await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/users/${encodeURIComponent(targetId)}`,{headers:{apikey:configured('SUPABASE_SERVICE_ROLE_KEY'),Authorization:`Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`}});if(lookup.ok)target=await lookup.json();}catch{}
+  try{await rest('audit_logs',{method:'POST',body:JSON.stringify({actor_id:admin.id,action:'user.delete',entity_type:'user',entity_id:targetId,before_data:{email:target?.email||'',name:target?.user_metadata?.name||''}})});}catch{}
+  const response = await fetch(`${configured('SUPABASE_URL')}/auth/v1/admin/users/${encodeURIComponent(targetId)}?should_soft_delete=false`, {
     method: 'DELETE',
-    headers: {
-      apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),
-      Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`
-    }
+    headers: {apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`}
   });
-  if (!response.ok) return sendJson(req, res, response.status, { error: 'Suppression Supabase impossible.', details: (await response.text()).slice(0, 500) });
-  return sendJson(req, res, 200, { ok: true });
+  const details=await response.text();
+  if (!response.ok && response.status!==404) return sendJson(req, res, response.status, { error: 'Suppression Supabase impossible.', details: details.slice(0,500) });
+  try{await rest(`profiles?user_id=eq.${encodeURIComponent(targetId)}`,{method:'DELETE',headers:{Prefer:'return=minimal'}});}catch(error){console.warn('[DanaTrap delete profile cleanup]',error.message);}
+  return sendJson(req, res, 200, { ok: true, userId:targetId, message:'Utilisateur et contenus associés supprimés.' });
+}
+
+async function closeConversation(req,res){
+  const user=await verifyUser(req);const {conversationId}=await readJson(req);const id=String(conversationId||'').trim();
+  if(!id)return sendJson(req,res,400,{error:'Conversation manquante.'});
+  const rows=await rest(`conversation_members?conversation_id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(user.id)}&select=conversation_id`);
+  if(!Array.isArray(rows)||!rows.length)return sendJson(req,res,403,{error:'Cette conversation ne t’appartient pas.'});
+  await rest(`conversation_members?conversation_id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(user.id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({archived:true})});
+  try{await rest('audit_logs',{method:'POST',body:JSON.stringify({actor_id:user.id,action:'conversation.close',entity_type:'conversation',entity_id:id})});}catch{}
+  return sendJson(req,res,200,{ok:true,conversationId:id});
 }
 
 
@@ -950,6 +962,7 @@ const server = http.createServer(async (req, res) => {
     if (['GET', 'HEAD'].includes(req.method) && url.pathname.startsWith('/media/')) {
       return await streamMedia(req, res, decodeURIComponent(url.pathname.slice('/media/'.length)), url);
     }
+    if (req.method === 'POST' && url.pathname === '/conversations/close') return await closeConversation(req,res);
     if (req.method === 'GET' && url.pathname === '/admin/users') {
       if (!rateAllowed(req, 'admin', 30)) return sendJson(req, res, 429, { error: 'Trop de requêtes administrateur.' });
       return await listUsers(req, res);
