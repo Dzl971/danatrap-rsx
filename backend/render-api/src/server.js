@@ -3,7 +3,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = '5.0.0-phase12.1';
+const VERSION = '5.0.0-phase12.2';
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
@@ -627,8 +627,10 @@ async function hardDeleteAuthUser(userId) {
     headers: {
       apikey: configured('SUPABASE_SERVICE_ROLE_KEY'),
       Authorization: `Bearer ${configured('SUPABASE_SERVICE_ROLE_KEY')}`,
-      Accept: 'application/json'
-    }
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ should_soft_delete: false })
   });
   const details = await response.text();
   if (!response.ok && response.status !== 404) {
@@ -961,37 +963,33 @@ async function trashBeat(req,res){
   const user=await verifyUser(req);
   const {beatId}=await readJson(req);
   const id=String(beatId||'').trim();
-  if(!id)return sendJson(req,res,400,{error:'Production manquante.'});
+  if(!id)return sendJson(req,res,400,{error:'Production manquante.',stage:'validation'});
   const beat=await getBeatSnapshot(id);
-  if(!beat)return sendJson(req,res,404,{error:'Production introuvable.'});
-  if(String(beat.producer_id)!==String(user.id)&&!(await isAdmin(user)))return sendJson(req,res,403,{error:'Action non autorisée.'});
+  if(!beat)return sendJson(req,res,404,{error:'Production introuvable.',stage:'lookup'});
+  if(String(beat.producer_id)!==String(user.id)&&!(await isAdmin(user)))return sendJson(req,res,403,{error:'Action non autorisée.',stage:'authorization'});
 
-  const design={...(beat.design||{}),_trashed:true,_trashed_at:new Date().toISOString()};
   let trashRow=null;
-  const existing=await rest(`trash_items?entity_type=eq.beat&entity_id=eq.${encodeURIComponent(beat.id)}&restored_at=is.null&permanently_deleted_at=is.null&select=*&limit=1`).catch(()=>[]);
-  if(existing?.[0]){
-    trashRow=existing[0];
-  }else{
-    const inserted=await rest('trash_items',{
-      method:'POST',headers:{Prefer:'return=representation'},
-      body:JSON.stringify({entity_type:'beat',entity_id:beat.id,owner_id:beat.producer_id,deleted_by:user.id,snapshot:beat,drive_files:beat.files||[],restore_until:new Date(Date.now()+30*86400000).toISOString()})
-    });
-    trashRow=inserted?.[0]||null;
-  }
+  try{
+    const existing=await rest(`trash_items?entity_type=eq.beat&entity_id=eq.${encodeURIComponent(beat.id)}&restored_at=is.null&permanently_deleted_at=is.null&select=*&limit=1`);
+    if(existing?.[0])trashRow=existing[0];
+    else{
+      const inserted=await rest('trash_items',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({entity_type:'beat',entity_id:beat.id,owner_id:beat.producer_id,deleted_by:user.id,snapshot:beat,drive_files:beat.files||[],restore_until:new Date(Date.now()+30*86400000).toISOString()})});
+      trashRow=inserted?.[0]||null;
+    }
+    if(!trashRow)throw new Error('La copie de sauvegarde n’a pas été créée.');
+  }catch(error){return sendJson(req,res,error.status||500,{error:'Impossible de créer la sauvegarde de corbeille.',details:error.message,stage:'trash_snapshot'});}
 
-  const updated=await rest(`beats?id=eq.${encodeURIComponent(beat.id)}`,{
-    method:'PATCH',headers:{Prefer:'return=representation'},
-    body:JSON.stringify({visibility:'Brouillon',design,updated_at:new Date().toISOString()})
-  });
-  if(!updated?.length||updated[0]?.design?._trashed!==true){
-    return sendJson(req,res,409,{error:'La production n’a pas été retirée du catalogue. Aucune modification confirmée par Supabase.'});
-  }
+  try{
+    const deleted=await rest(`beats?id=eq.${encodeURIComponent(beat.id)}`,{method:'DELETE',headers:{Prefer:'return=representation'}});
+    if(!deleted?.length)throw new Error('Supabase n’a retourné aucune ligne supprimée.');
+    const remaining=await rest(`beats?id=eq.${encodeURIComponent(beat.id)}&select=id&limit=1`);
+    if(remaining?.length)throw new Error('La production existe encore après la requête DELETE.');
+  }catch(error){return sendJson(req,res,error.status||500,{error:'La production n’a pas pu être supprimée de Supabase.',details:error.message,stage:'database_delete'});}
 
   const driveIds=extractDriveFileIds(beat),driveWarnings=[];
   for(const fileId of driveIds){try{await setDriveTrash(fileId,true);}catch(error){driveWarnings.push({fileId,error:error.message});}}
-  try{await rest('audit_logs',{method:'POST',headers:{Prefer:'return=minimal'},body:JSON.stringify({actor_id:user.id,action:'beat.trash',entity_type:'beat',entity_id:beat.id,before_data:{title:beat.title,visibility:beat.visibility}})});}catch{}
-
-  return sendJson(req,res,200,{ok:true,deleted:true,beatId:beat.id,trash:trashRow,driveTrashed:driveIds.length-driveWarnings.length,driveWarnings});
+  try{await rest('audit_logs',{method:'POST',headers:{Prefer:'return=minimal'},body:JSON.stringify({actor_id:user.id,action:'beat.delete',entity_type:'beat',entity_id:beat.id,before_data:{title:beat.title,visibility:beat.visibility}})});}catch{}
+  return sendJson(req,res,200,{ok:true,deleted:true,beatId:beat.id,trash:trashRow,driveTrashed:driveIds.length-driveWarnings.length,driveWarnings,message:'Production supprimée et sauvegardée dans la corbeille pendant 30 jours.'});
 }
 async function restoreTrash(req,res){await requireAdmin(req);const {trashId}=await readJson(req);const rows=await rest(`trash_items?id=eq.${encodeURIComponent(trashId)}&select=*`);const item=rows?.[0];if(!item)return sendJson(req,res,404,{error:'Élément de corbeille introuvable.'});if(item.permanently_deleted_at)return sendJson(req,res,410,{error:'Le délai de restauration de 30 jours est dépassé.'});for(const fileId of extractDriveFileIds([item.drive_files,item.snapshot])){try{await setDriveTrash(fileId,false);}catch(error){console.warn('[DanaTrap restore Drive]',fileId,error.message);}}if(item.entity_type==='beat'){const snap={...(item.snapshot||{})};const licenses=snap.licenses||[];delete snap.licenses;delete snap.created_at;delete snap.updated_at;snap.design={...(snap.design||{})};delete snap.design._trashed;await rest(`beats?id=eq.${encodeURIComponent(item.entity_id)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify(snap)});await rest(`licenses?beat_id=eq.${encodeURIComponent(item.entity_id)}`,{method:'DELETE'});if(licenses.length)await rest('licenses',{method:'POST',body:JSON.stringify(licenses.map(({id,...l})=>({...l,beat_id:item.entity_id})))});}await rest(`trash_items?id=eq.${encodeURIComponent(trashId)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({restored_at:new Date().toISOString()})});return sendJson(req,res,200,{ok:true});}
 async function driveAbout(){const token=await googleAccessToken();const response=await fetch('https://www.googleapis.com/drive/v3/about?fields=user,storageQuota',{headers:{Authorization:`Bearer ${token}`}});if(!response.ok)throw new Error(`Drive health ${response.status}`);return response.json();}
@@ -1159,7 +1157,7 @@ const server = http.createServer(async (req, res) => {
       if (!rateAllowed(req, 'admin', 30)) return sendJson(req, res, 429, { error: 'Trop de requêtes administrateur.' });
       return await sendRecoveryLink(req, res);
     }
-    if (req.method === 'POST' && url.pathname === '/admin/delete-user') {
+    if (req.method === 'POST' && ['/admin/delete-user','/api/v1/admin/delete-user'].includes(url.pathname)) {
       if (!rateAllowed(req, 'admin', 30)) return sendJson(req, res, 429, { error: 'Trop de requêtes administrateur.' });
       return await deleteUser(req, res);
     }
@@ -1167,7 +1165,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/beats/versions') return await listBeatVersions(req,res,url);
     if (req.method === 'POST' && url.pathname === '/beats/version/restore') return await restoreBeatVersion(req,res);
     if (req.method === 'GET' && url.pathname === '/reservations/agreement') return await reservationAgreement(req,res,url);
-    if (req.method === 'POST' && url.pathname === '/beats/trash') {
+    if (req.method === 'POST' && ['/beats/trash','/api/v1/beats/trash'].includes(url.pathname)) {
       if (!rateAllowed(req, 'trash', 30)) return sendJson(req,res,429,{error:'Trop de suppressions.'});
       return await trashBeat(req,res);
     }
